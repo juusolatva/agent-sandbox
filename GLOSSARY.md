@@ -124,3 +124,19 @@ _Avoid_: Proof, confirmed finding
 The differences between a run's original snapshot and its candidate, available for
 review independently of whether the run completed or verification passed.
 _Avoid_: Applied fix, accepted patch
+
+### Campaigns and finding review
+
+**Campaign**:
+A durable queue of investigation tasks with retained attempts and bounded execution.
+
+**Attempt**:
+A campaign's record of invoking a run for one task, including its outcome and artifact references.
+
+**Finding observation**:
+An operator-recorded assessment with a status and references to evidence. Observations
+with the same location and root-cause text are grouped for review.
+
+**Reproducer replay**:
+Execution of an operator-selected command against original and candidate snapshots in
+separate workers, retaining both results for assessment.

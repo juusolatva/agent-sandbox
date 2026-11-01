@@ -193,9 +193,18 @@ def main():
     campaign_create.add_argument('directory')
     campaign_create.add_argument('state')
     campaign_create.add_argument('tasks', help='JSON array of task strings')
+    campaign_finding = campaign_commands.add_parser('finding')
+    campaign_finding.add_argument('directory')
+    campaign_finding.add_argument('finding', help='Operator-reviewed finding JSON')
     campaign_run = campaign_commands.add_parser('resume')
     campaign_run.add_argument('directory')
     campaign_run.add_argument('--max-runs', type=int, required=True)
+    campaign_run.add_argument('--max-attempts', type=int, default=3)
+    campaign_replay = campaign_commands.add_parser('replay')
+    campaign_replay.add_argument('directory')
+    campaign_replay.add_argument('run', help='Run artifact directory relative to campaign')
+    campaign_replay.add_argument('reproducer', help='Operator-owned file containing the replay command')
+    campaign_replay.add_argument('--timeout', type=float, default=600)
     campaign_run.add_argument('--timeout', type=float, default=1800)
     campaign_run.add_argument('--steps', type=int, default=20)
     campaign_run.add_argument('--model', default=os.environ.get('LLM_MODEL'))
@@ -212,9 +221,13 @@ def main():
             import campaign
             if args.campaign_command == 'create':
                 campaign.create(args.directory, args.state, args.tasks)
+            elif args.campaign_command == 'replay':
+                print(campaign.replay(args.directory, args.run, Path(args.reproducer).read_text(), args.timeout))
+            elif args.campaign_command == 'finding':
+                print(campaign.record_finding(args.directory, json.loads(Path(args.finding).read_text())))
             else:
                 reason = campaign.resume(args.directory, args.max_runs, args.timeout, args.steps,
-                                         args.base_url, args.model, args.text_actions)
+                                         args.base_url, args.model, args.text_actions, max_attempts=args.max_attempts)
                 print(f'Campaign stopped: {reason}')
                 raise SystemExit(0 if reason == 'all_completed' else 1)
         elif args.command == 'build':

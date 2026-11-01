@@ -240,3 +240,15 @@ Additional Stage 3 validation:
 - Confirmed Stage 3 commit `3cc7710` and subsequent glossary and workflow fixes.
 - Added bounded sequential campaigns with durable task and attempt state, exact task deduplication, resume, locking, stop reasons, and retained run artifacts. Each attempt starts from the prepared project.
 - Finding extraction/deduplication, candidate carryover, and automatic scheduling remain future work; see STAGE4.md. Campaign state and outputs require operator review.
+
+### 2026-11-01 — Campaign finding records
+
+- Added operator-authored finding observations with explicit status, links to retained run artifacts, and exact location/root-cause grouping that preserves all observations. This is not automatic validation or reproducibility verification.
+- Added a regression test for grouping and evidence path validation. Automatic extraction, fresh-worker reproducer replay, coverage and stall tracking, and target selection remain outstanding.
+
+### 2026-11-01 — Reproducer replay and persistent attempt limits
+
+- Added operator-selected command replay against retained original and candidate snapshots in separate fresh offline workers. Reports preserve command text, snapshot identities, exit codes, and bounded diagnostics for review and finding evidence links.
+- Added persistent per-task attempt limits (default three) to bound repeated unsuccessful investigations across resumes.
+- Validation: 37 tests discovered, 31 passed and 6 opt-in Docker tests skipped. New tests cover separate replay workers, retained results, recorded-run selection, and retry limits. Actual Docker replay and live inference were not run in this update.
+- Replay status records an exit-code comparison, not independent confirmation of a bug. Automated target selection, finding extraction, coverage tracking, repeated-command detection, and reproducer minimization remain outstanding.
