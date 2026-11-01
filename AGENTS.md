@@ -207,3 +207,23 @@ Additional Stage 3 validation:
   Stage 4 persistent campaigns remain future work.
 - See STAGE3.md for setup, run commands, retained artifacts, candidate replay,
   transfer limits, and the remaining container/disk-isolation limitations.
+
+### 2026-11-01 — Domain glossary established
+
+- Applied the requested domain-modeling skill to the existing empty
+  [GLOSSARY.md](GLOSSARY.md) and linked it from README.md.
+- Defined preparation, investigation, acceptance, and retained-result terms
+  against the current controller, execution boundary, preparation CLI, and tests.
+  Distinguished task/run/step, prepared state/run outcome, workspace/protected
+  checks, baseline/candidate, and completion request/accepted completion.
+- Cross-checked edge cases: rejected completion can end in step exhaustion;
+  candidates and proposed patches can exist without accepted completion; the
+  original snapshot includes preparation changes rather than necessarily
+  matching the operator's source checkout. Passing verification is not a
+  security verdict.
+- Kept implementation details and future campaign design out of the glossary.
+  No architectural decision or runtime behavior changed. Persistent campaign
+  terminology remains for Stage 4 design when its meanings are resolved.
+- Verification: definitions reviewed against code and existing regression cases;
+  documentation whitespace and local glossary links checked. Runtime tests were
+  not rerun for this documentation-only change.

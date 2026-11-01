@@ -7,6 +7,7 @@ Stage 2 adds C/C++ (GCC and Clang), Go, Rust, Python 3.13/3.14, and Node.js
 for project manifests, preparation, smoke checks, and running a prepared project.
 Stage 3 adds a [trusted host controller and protected verification](STAGE3.md),
 with offline command workers and durable evidence/patch export.
+Project terminology is defined in the [domain glossary](GLOSSARY.md).
 
 ---
 
