@@ -1,0 +1,56 @@
+services:
+  # Bridge proxy: forwards traffic from the offline sandbox network to LM Studio on Windows
+  lm-proxy:
+    image: alpine/socat:latest
+    container_name: lm-studio-proxy
+    restart: unless-stopped
+    command: >
+      TCP-LISTEN:1234,fork,reuseaddr
+      TCP:${LM_STUDIO_HOST:-10.0.0.2}:${LM_STUDIO_PORT:-1234}
+    networks:
+      - sandbox_net
+      - host_bridge
+
+  # Isolated LLM Sandbox: NO internet access, can only reach lm-proxy:1234
+  sandbox:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: llm-sandbox
+    depends_on:
+      - lm-proxy
+    environment:
+      - OPENAI_BASE_URL=http://lm-proxy:1234/v1
+      - OPENAI_API_KEY=lm-studio
+      - LLM_MODEL=${LLM_MODEL:-}
+      - MAX_ITERATIONS=${MAX_ITERATIONS:-20}
+      - MAX_HISTORY_MESSAGES=${MAX_HISTORY_MESSAGES:-24}
+      - COMMAND_TIMEOUT=${COMMAND_TIMEOUT:-30}
+      - VERIFY_CMD=${VERIFY_CMD:-}
+      - CONTINUOUS=${CONTINUOUS:-0}
+    volumes:
+      # Read-only mount for the agent loop script so the LLM cannot overwrite its own harness
+      - ./agent.py:/home/agent/agent.py:ro
+      # Shared workspace where the LLM can create, modify, and execute files
+      - ./workspace:/home/agent/workspace
+    networks:
+      - sandbox_net
+    # Sandbox hardening & resource limits
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 2g
+    cpus: 2.0
+    stdin_open: true
+    tty: true
+
+networks:
+  # Strictly offline network: containers ONLY on this network have no external routing
+  sandbox_net:
+    driver: bridge
+    internal: true
+  # Standard bridge used exclusively by lm-proxy to reach the host
+  host_bridge:
+    driver: bridge

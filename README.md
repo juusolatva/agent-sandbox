@@ -1,0 +1,176 @@
+# Offline Docker Sandbox for LM Studio (WSL2 + Windows)
+
+This setup runs an autonomous local LLM agent loop inside an **offline, locked-down Docker container** in WSL2 while using **LM Studio** running natively on Windows for GPU-accelerated inference.
+
+---
+
+## Architecture & How Offline Isolation Works
+
+In Docker, setting a network to `internal: true` blocks **all** external routing—including traffic to the host machine (`127.0.0.1` or `10.0.0.2`). To give the sandbox **zero internet or LAN access** while still allowing it to talk to LM Studio, `docker-compose.yml` uses a two-container sidecar architecture:
+
+```
+┌─────────────────────────────────────────┐
+│          sandbox (llm-sandbox)          │
+│  • Runs agent.py as non-root (UID 1000) │
+│  • Attached ONLY to `sandbox_net`       │
+│  • NO internet or LAN access            │
+│  • Mounts ./workspace                   │
+└───────────────────┬─────────────────────┘
+                    │ http://lm-proxy:1234/v1
+                    ▼  (sandbox_net: internal=true)
+┌─────────────────────────────────────────┐
+│         lm-proxy (alpine/socat)         │
+│  • Attached to `sandbox_net`            │
+│    AND `host_bridge`                    │
+│  • Forwards TCP 1234 -> 10.0.0.2:1234   │
+└───────────────────┬─────────────────────┘
+                    │ TCP 10.0.0.2:1234
+                    ▼  (WSL2 mirrored network)
+┌─────────────────────────────────────────┐
+│       LM Studio (Windows Host)          │
+│  • Serving on Local Network (:1234)     │
+└─────────────────────────────────────────┘
+```
+
+### Why `10.0.0.2` Instead of `host.docker.internal`?
+In WSL2 with `networkingMode=mirrored`, Windows mirrors its physical/virtual host interfaces (`127.0.0.1` and `10.0.0.2`), **not** the Linux-only `docker0` bridge (`172.17.0.1`) that `host.docker.internal` resolves to. Pointing `lm-proxy` to `10.0.0.2:1234` routes traffic directly to LM Studio on Windows.
+
+### Sandbox Hardening
+The `sandbox` service in `docker-compose.yml` enforces:
+- **Network isolation:** Attached exclusively to `sandbox_net` (`internal: true`).
+- **Read-only harness:** `agent.py` is mounted `:ro` so the LLM cannot modify its own control loop.
+- **Dropped capabilities:** `cap_drop: [ALL]` and `security_opt: ["no-new-privileges:true"]`.
+- **Resource limits:** Capped at `2.0` CPUs, `2g` RAM, and `pids_limit: 128` (prevents fork bombs).
+- **Command timeouts & truncation:** Every bash command has a strict timeout (default `30s`) and output is truncated at `8000` characters so runaway output cannot blow up the LLM's context window.
+
+---
+
+## Hybrid Resilient Tool Calling (Why It Doesn't Crash)
+
+LM Studio's OpenAI server uses a strict internal grammar parser (`peg-native`) when `tools=[...]` is passed. Many local models (including `openai/gpt-oss-20b`, Qwen, and Gemma) occasionally deviate slightly from that grammar when finishing a task, causing LM Studio to return an HTTP `400`/`500` error (`The model produced output that does not match the expected peg-native format`).
+
+`agent.py` solves this automatically via `call_llm_resilient`:
+1. **Primary Mode (Native OpenAI Tools):** Calls LM Studio with `run_bash` and `finish_task` tools for fast, structured execution.
+2. **Automatic Fallback (Plain-Text Mode):** If LM Studio throws a `peg-native` parser error, `agent.py` catches it, flattens the conversation history, and immediately retries the request *without* the `tools` parameter so the loop never crashes.
+3. **Multi-Format Parsing:** Understands native `tool_calls`, `<bash>...</bash>` and `<done>...</done>` XML tags, and ```` ```bash ```` markdown blocks.
+
+---
+
+## Quick Start
+
+### 1. Prerequisites
+1. In **LM Studio (Windows)**, load a chat/coding model and enable **Serve on Local Network** on port `1234`.
+2. Build the sandbox image once in WSL2:
+   ```bash
+   docker compose build
+   ```
+
+### 2. Interactive Mode
+Opens a prompt where you can type tasks one after another:
+```bash
+docker compose run --rm sandbox
+```
+
+### 3. Single-Task Mode
+Pass the task directly on the command line; the container runs until the task completes and then exits:
+```bash
+docker compose run --rm sandbox "Create a Python script that generates the first 50 prime numbers and save them to primes.txt"
+```
+
+### 4. Choosing a Specific Model
+By default, `agent.py` uses the first non-embedding model returned by LM Studio. Override it with `LLM_MODEL`:
+```bash
+LLM_MODEL="qwen/qwen2.5-coder-14b" docker compose run --rm sandbox "Refactor the scripts in this folder"
+```
+
+---
+
+## Getting Results In and Out of the Sandbox
+
+The container's `/home/agent/workspace` directory is bind-mounted directly to `./workspace` on your WSL2 host:
+```yaml
+volumes:
+  - ./workspace:/home/agent/workspace
+```
+- **Extracting outputs:** Any file the LLM writes inside `/home/agent/workspace` (e.g., `workspace/hello.sh`, reports, generated code, SQLite databases) is immediately available in `~/util/sandbox/workspace/` on your host machine.
+- **Providing inputs:** Drop source code, datasets, or prompt instructions into `~/util/sandbox/workspace/` on your host machine and they are immediately accessible to the LLM inside `/home/agent/workspace`.
+
+---
+
+## Stopping Conditions: How Does the Agent Know When to Stop?
+
+You have two ways to control when the loop stops:
+
+### 1. LLM Self-Reporting (Default)
+The LLM inspects the exit codes and `stdout`/`stderr` of its commands and calls `finish_task` (or outputs `<done>...</done>`) when it believes the goal is satisfied.
+
+### 2. Deterministic Verification Gate (`VERIFY_CMD`)
+Local LLMs can sometimes declare victory prematurely before tests pass. Setting `VERIFY_CMD` enforces an external bash check inside the sandbox **every time** the LLM tries to finish:
+- If `VERIFY_CMD` exits with code `0`, the loop accepts completion and stops.
+- If `VERIFY_CMD` exits with a non-zero code, the harness **rejects** completion, feeds the test/check failure output back to the LLM, and forces it to keep iterating until the check passes.
+
+**Example — Run until `pytest` passes:**
+```bash
+VERIFY_CMD="pytest -q" docker compose run --rm sandbox \
+  "Write a calculator module in calc.py and a test suite in test_calc.py"
+```
+
+**Example — Run until an output file exists and has at least 10 lines:**
+```bash
+VERIFY_CMD="test -f results.txt && [ \$(wc -l < results.txt) -ge 10 ]" \
+  docker compose run --rm sandbox \
+  "Generate 10 unique system administration tips into results.txt"
+```
+
+---
+
+## Running in an Infinite Loop
+
+There are two ways to run the sandbox in an infinite loop depending on your goal:
+
+### Mode A: Infinite Steps Until Task Completes (`MAX_ITERATIONS=0`)
+By default, a task stops after `20` steps (`MAX_ITERATIONS=20`). Setting `MAX_ITERATIONS=0` removes the step limit so the agent keeps working indefinitely until the task (and optional `VERIFY_CMD`) succeeds:
+
+```bash
+MAX_ITERATIONS=0 VERIFY_CMD="./run_tests.sh" docker compose run --rm sandbox \
+  "Fix all bugs in app.py until ./run_tests.sh passes"
+```
+
+> **Context Window Protection:** To prevent infinite runs from overflowing LM Studio's context window, `agent.py` automatically trims the message history using a sliding window (`MAX_HISTORY_MESSAGES=24`), always preserving the system prompt, the original task, and the most recent `24` messages.
+
+### Mode B: Continuous Autonomous Loop (`CONTINUOUS=1`)
+If you want the agent to run **forever** in a loop—restarting with a fresh context window after each completed cycle (useful for fuzzing, continuous code improvement, generating synthetic data, or polling a task queue in `./workspace`)—set `CONTINUOUS=1`:
+
+```bash
+CONTINUOUS=1 MAX_ITERATIONS=30 docker compose run --rm sandbox \
+  "Read TODO.md in the workspace, pick the next unfinished item, implement and test it, mark it done in TODO.md, and finish."
+```
+
+To run it in the background as a daemon and watch its logs:
+```bash
+CONTINUOUS=1 docker compose run -d --name agent-daemon sandbox \
+  "Continuously generate new unit test edge cases in test_suite.py and verify they pass."
+
+# Watch live logs
+docker logs -f agent-daemon
+
+# Stop the infinite daemon when done
+docker stop agent-daemon && docker rm agent-daemon
+```
+
+---
+
+## Configuration Reference (Environment Variables)
+
+All settings can be passed on the command line or configured in a `.env` file next to `docker-compose.yml`:
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `LM_STUDIO_HOST` | `10.0.0.2` | IP/hostname used by `lm-proxy` to reach LM Studio on Windows |
+| `LM_STUDIO_PORT` | `1234` | Port where LM Studio's Local Inference Server is listening |
+| `LLM_MODEL` | *(auto-detect)* | Model ID in LM Studio (e.g., `openai/gpt-oss-20b`, `qwen/qwen2.5-coder-14b`) |
+| `MAX_ITERATIONS` | `20` | Maximum steps per task (`0` = infinite steps) |
+| `MAX_HISTORY_MESSAGES` | `24` | Sliding window size to prevent overflowing LM Studio's context limit |
+| `COMMAND_TIMEOUT` | `30` | Maximum seconds a single bash command can run before being killed |
+| `VERIFY_CMD` | *(empty)* | Optional bash command that must exit `0` before the agent is allowed to finish |
+| `CONTINUOUS` | `0` | Set to `1` to restart the task in an infinite cycle (`while True`) |
