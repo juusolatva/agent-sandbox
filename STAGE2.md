@@ -70,26 +70,18 @@ ID, and prepared image ID. Checks use the recorded image ID rather than a tag.
 
 ## Run the agent on a prepared project
 
-With LM Studio configured as described in README:
+Stage 3 now provides the prepared-project runner. See [STAGE3.md](STAGE3.md)
+for host SDK setup, protected verification configuration, and retained artifacts.
+For example, after preparing the bundled Python project:
 
 ```bash
-LLM_MODEL="your-loaded-model" COMMAND_TIMEOUT=600 \
-  python3 sandbox.py run artifacts/cpp.json \
-  "Investigate a bounded area, reproduce suspected bugs, and report evidence."
+.venv/bin/python sandbox.py run artifacts/python313.json \
+  "Investigate a bounded area and retain evidence." --model google/gemma-4-12b
 ```
 
-This first repeats the offline baseline, then uses the prepared Compose override
-so the default `./workspace` mount does not hide baked-in project dependencies.
-The existing inference proxy is started through Compose. The agent runs in a
-disposable container, and `VERIFY_CMD` is set to the manifest check. Console
-output is retained by the caller; filesystem edits are discarded when it exits.
-Durable patch/evidence export and protected independent verification are Stage 3.
-The agent container still uses the Stage 1 inference network; the baseline check
-container has no network at all. No host Docker socket or credentials are mounted.
-
-The prepared run defaults to 4 GiB memory; set `PROJECT_MEMORY` to override it.
-Manifest CPU/PID/memory/timeout limits apply to baseline checks. Agent step,
-command, and inference limits retain their existing environment settings.
+Stage 2's prepared Compose override remains available for legacy use; the Stage 3
+runner uses offline per-command containers and does not start that proxy.
+Manifest resource limits apply to Stage 3 workers as well as baseline checks.
 
 ## Versioning and proxy trust
 

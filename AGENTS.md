@@ -136,3 +136,74 @@ Stage 2 implementation progress:
 Final Stage 2 checks: all 18 unit tests, both Compose configurations, and
 whitespace validation passed. OpenAI SDK import/client initialization also passed
 inside both Python images without network access.
+
+### 2026-11-01 — Stage 2 published; Stage 3 started
+
+- Revalidated all 18 unit tests and both Compose configs, committed Stage 2 as
+  `7a6469c`, and pushed directly to origin/main as requested.
+- LM Studio responded at http://127.0.0.1:1234/v1/models. The supplied fallback
+  is http://10.0.0.2:1234/v1.
+- Stage 3 uses a trusted host controller and fresh offline execution containers
+  per command, with separate read-only verification and durable run artifacts.
+
+Stage 3 implementation and validation progress:
+
+- Added a trusted host controller with injected execution/verification interfaces
+  rather than executing model commands on the host. Inference credentials stay
+  with the controller; offline workers receive no host mounts except the trusted
+  read-only transfer helper.
+- Added per-command containers, a run-specific disposable home volume, read-only
+  root filesystems, executable scratch space for compiled tests, resource limits,
+  and cleanup that kills detached descendants.
+- Added operator-owned protected checks and separate pristine verifier volumes,
+  immutable dependencies, read-only candidate source, bounded regular-file
+  transfers, durable events/snapshots/results, and Git-compatible patch export.
+- Fixed missing parent-directory execute permission in the Stage 2 harness image.
+  Preparation repairs existing base images too. Prepared recipe identity now
+  includes the Stage 3 schema to avoid retagging prior recipes.
+- Docker integration tests passed: protected baselines in all six language
+  profiles, rejection of broken source despite rewritten workspace tests,
+  detached-process cleanup, symlink rejection, and durable evidence retention.
+- Unit suite has 25 passing tests plus 5 opt-in Docker tests (all passed with
+  Docker enabled). Git patch tests cover binary files, executable modes, and
+  missing final newlines.
+- Host disk filled during validation. Approved unused Docker build-cache cleanup
+  recovered 2.594 GB; user subsequently cleared host Go/Rust caches, bringing free
+  space to about 12 GB. Linux still reports a 50 GiB block device / 49 GiB root
+  filesystem. No disk or filesystem resize was performed.
+- LM Studio live tests at loopback reached inference and executed commands using
+  the 0.5B coder model, but malformed completion actions caused step exhaustion.
+  These were correctly recorded as incomplete, with artifacts retained. A bounded
+  larger-model check is in progress.
+
+Additional Stage 3 validation:
+
+- Gemma 4 12B (`google/gemma-4-12b`), as recommended by the user, completed a
+  live native-tool smoke run at loopback. It created evidence.txt, passed
+  protected verification, and completed explicitly; the run artifacts are in
+  `artifacts/runs/7f49a3637d6b4a2f90dd4bc44e5453e3/`. A Qwen 14B text-action
+  smoke test also completed; tiny-model attempts remain recorded as exhausted.
+- Reproduced a Clang 14 ASan startup failure with an empty program: 13/40 PIE
+  starts segfaulted. LLVM D147984 documents the matching allocator/ASLR conflict.
+  Ranked layout conflict, general runtime failure, and memory-limit hypotheses;
+  changing only PIE layout produced 100/100 successful starts.
+- Added a regression test and observed it fail before changing the example
+  manifest. Applied `-fno-pie -no-pie` only to bundled sanitizer fixture builds.
+  No host ASLR setting or production project configuration was changed.
+
+### 2026-11-01 — Stage 3 completed locally
+
+- All 33 tests passed with Docker enabled: 27 unit/subprocess tests and 6 Docker
+  integration tests, including all six protected language baselines and the
+  100-start sanitizer regression. Both Compose configs and whitespace validation
+  passed. Hosted CI has been configured but not run here.
+- The C++ original regression was observed failing before the fixture-only fix;
+  both the minimized 100-start comparison and full regression pass after it.
+- Protected verification now also gates preparation before state publication.
+- Gemma 4 12B completed live native-tool validation; documented as the model in
+  examples. Explicit model selection and text-only actions remain available.
+- Stage 3 implementation is complete. The user subsequently authorized direct
+  publication to main. Existing user glossary and Claude files were not changed.
+  Stage 4 persistent campaigns remain future work.
+- See STAGE3.md for setup, run commands, retained artifacts, candidate replay,
+  transfer limits, and the remaining container/disk-isolation limitations.

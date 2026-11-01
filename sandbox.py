@@ -25,7 +25,7 @@ def docker(*args, capture=False, timeout=None):
 def load_project(path):
     path = Path(path).resolve()
     config = json.loads(path.read_text())
-    allowed = {'name', 'source', 'profile', 'prepare', 'check', 'memory', 'cpus', 'pids', 'timeout'}
+    allowed = {'name', 'source', 'profile', 'prepare', 'check', 'memory', 'cpus', 'pids', 'timeout', 'verification'}
     if not isinstance(config, dict) or set(config) - allowed:
         raise ValueError('Project manifest must be an object with documented fields')
     for field in ('name', 'source', 'profile', 'check'):
@@ -43,6 +43,14 @@ def load_project(path):
     source = (path.parent / config['source']).resolve()
     if not source.is_dir():
         raise ValueError(f'Source directory does not exist: {source}')
+    verification = config.get('verification')
+    if verification is not None:
+        if not isinstance(verification, dict) or set(verification) != {'source', 'command'}:
+            raise ValueError('verification requires source and command')
+        if any(not isinstance(v, str) or not v.strip() for v in verification.values()):
+            raise ValueError('verification fields must be nonempty strings')
+        if not (path.parent / verification['source']).resolve().is_dir():
+            raise ValueError('Verification source directory does not exist')
     return config, source
 
 
@@ -99,9 +107,18 @@ def prepare(manifest, state, ca=None):
         context = Path(temporary)
         snapshot(source, context / 'source')
         source_hash = fingerprint(context / 'source')
-        key = hashlib.sha256(json.dumps([config, source_hash, base], sort_keys=True).encode()).hexdigest()
+        verification_hash = None
+        if config.get('verification'):
+            verification_source = (Path(manifest).resolve().parent / config['verification']['source']).resolve()
+            snapshot(verification_source, context / 'verification')
+            verification_hash = fingerprint(context / 'verification')
+        key = hashlib.sha256(json.dumps(["stage3-v1", config, source_hash, verification_hash, base], sort_keys=True).encode()).hexdigest()
         base_tag = f"agent-sandbox/{config['profile']}:stage2"
-        lines = [f'FROM {base_tag}', 'COPY --chown=agent:agent source/ /home/agent/workspace/']
+        lines = [f'FROM {base_tag}', 'USER root', 'RUN chmod 0755 /opt/sandbox',
+                 'COPY --chown=agent:agent source/ /home/agent/workspace/']
+        if config.get('verification'):
+            lines.append('COPY --chown=root:root verification/ /opt/sandbox/verification/')
+        lines.append('USER agent')
         for command in config.get('prepare', []):
             # A secret mount exists only during preparation and is never copied.
             trust = ('if [ -f /run/secrets/proxy_ca ]; then '
@@ -119,9 +136,14 @@ def prepare(manifest, state, ca=None):
         image = docker('image', 'inspect', tag, '--format', '{{.Id}}', capture=True)
         if docker('image', 'inspect', base_tag, '--format', '{{.Id}}', capture=True) != base:
             raise ValueError('Base image changed during preparation; retry')
-    record = {'image': image, 'base': base, 'source_hash': source_hash, 'config': config}
+    record = {'image': image, 'base': base, 'source_hash': source_hash, 'verification_hash': verification_hash, 'config': config}
     # Store state only after a genuinely offline baseline succeeds.
     check_image(record)
+    if verification_hash:
+        from execution import verify
+        code, output = verify(record)
+        if code:
+            raise ValueError(f'Protected preparation baseline failed: {output}')
     Path(state).parent.mkdir(parents=True, exist_ok=True)
     Path(state).write_text(json.dumps(record, indent=2) + '\n')
     print(f'Prepared and checked {image}; state saved to {state}')
@@ -144,6 +166,9 @@ def check_image(record):
 
 
 def main():
+    import signal
+    from agent import interrupt
+    signal.signal(signal.SIGTERM, interrupt)
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
     build_parser = commands.add_parser('build')
@@ -156,6 +181,15 @@ def main():
     run_parser = commands.add_parser('run')
     run_parser.add_argument('state')
     run_parser.add_argument('task')
+    run_parser.add_argument('--artifacts', default='artifacts/runs')
+    run_parser.add_argument('--base-url', default=os.environ.get('OPENAI_BASE_URL'))
+    run_parser.add_argument('--text-actions', action='store_true', help='Use explicit XML actions without native tools')
+    run_parser.add_argument('--model', default=os.environ.get('LLM_MODEL'))
+    run_parser.add_argument('--steps', type=int, default=20)
+    run_parser.add_argument('--timeout', type=float, default=1800)
+    verify_parser = commands.add_parser('verify')
+    verify_parser.add_argument('state')
+    verify_parser.add_argument('--candidate')
     check_parser = commands.add_parser('check')
     check_parser.add_argument('state')
     args = parser.parse_args()
@@ -164,16 +198,25 @@ def main():
             build(args.profile, args.ca)
         elif args.command == 'prepare':
             prepare(args.manifest, args.state, args.ca)
+        elif args.command == 'verify':
+            from execution import verify
+            from controller import transfer
+            record = json.loads(Path(args.state).read_text())
+            candidate = None
+            if args.candidate:
+                candidate = transfer.validate(json.loads(Path(args.candidate).read_text()))
+            code, output = verify(record, candidate)
+            print(output)
+            raise SystemExit(code)
         elif args.command == 'check':
             check_image(json.loads(Path(args.state).read_text()))
         else:
+            from controller import run
             record = json.loads(Path(args.state).read_text())
-            check_image(record)
-            environment = dict(os.environ, PREPARED_IMAGE=record['image'],
-                               VERIFY_CMD=record['config']['check'])
-            subprocess.run(['docker', 'compose', '-f', str(ROOT / 'docker-compose.yml'),
-                            '-f', str(ROOT / 'docker-compose.prepared.yml'),
-                            'run', '--rm', 'sandbox', args.task], env=environment, check=True)
+            outcome = run(record, args.task, args.artifacts, args.base_url,
+                          args.model, args.steps, args.timeout, text_actions=args.text_actions)
+            raise SystemExit(outcome)
+
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         parser.exit(exc.returncode if isinstance(exc, subprocess.CalledProcessError) else 1, f'{exc}\n')
 

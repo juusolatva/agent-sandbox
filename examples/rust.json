@@ -5,5 +5,9 @@
   "prepare": [
     "cargo generate-lockfile && cargo fetch --locked"
   ],
-  "check": "cargo test --frozen && cargo clippy --frozen -- -D warnings"
+  "check": "cargo test --frozen && cargo clippy --frozen -- -D warnings",
+  "verification": {
+    "source": "verification/rust",
+    "command": "cargo build --frozen && rustc /opt/sandbox/verification/check.rs --extern sandbox_smoke=/tmp/cargo-target/debug/libsandbox_smoke.rlib -L dependency=/tmp/cargo-target/debug/deps -o /tmp/check && /tmp/check"
+  }
 }

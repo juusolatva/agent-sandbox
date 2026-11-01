@@ -19,7 +19,12 @@ import sys
 import time
 from enum import IntEnum
 
-from openai import OpenAI
+try:
+    from openai import OpenAI
+except ModuleNotFoundError as exc:
+    if exc.name != "openai":
+        raise
+    OpenAI = None
 
 BASE_URL = os.environ.get("OPENAI_BASE_URL", "http://lm-proxy:1234/v1")
 API_KEY = os.environ.get("OPENAI_API_KEY", "lm-studio")
@@ -268,15 +273,19 @@ def validate_action(name: str, arguments: str) -> dict:
     return args
 
 
-def run_agent_loop(client: OpenAI, model: str, task: str) -> Outcome:
+def run_agent_loop(client: OpenAI, model: str, task: str, *, execute=None, verify=None, infer=None, steps=None) -> Outcome:
     """Dispatch explicit actions; completion is a verified, explicit outcome."""
+    execute = execute or execute_bash
+    verify = verify or check_verification_gate
+    infer = infer or call_llm_resilient
+    limit = MAX_ITERATIONS if steps is None else steps
     messages = [{"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": task}]
-    steps = itertools.count(1) if MAX_ITERATIONS <= 0 else range(1, MAX_ITERATIONS + 1)
-    for step in steps:
+    step_numbers = itertools.count(1) if limit <= 0 else range(1, limit + 1)
+    for step in step_numbers:
         messages = trim_history(messages)
         print(f"\n--- Step {step} (Model: {model}) ---")
-        msg, _ = call_llm_resilient(client, model, messages)
+        msg, _ = infer(client, model, messages)
         if msg is None:
             return Outcome.FAILED
         content = msg.content or ""
@@ -292,12 +301,12 @@ def run_agent_loop(client: OpenAI, model: str, task: str) -> Outcome:
                     if name == "finish_task":
                         if len(calls) != 1:
                             raise ValueError("finish_task must be the only action in a turn")
-                        passed, output = check_verification_gate()
+                        passed, output = verify()
                         if passed:
                             print(f"\n[Task Complete]: {args['summary']}")
                             return Outcome.COMPLETED
                     else:
-                        _, output = execute_bash(args["command"])
+                        _, output = execute(args["command"])
                 except (ValueError, TypeError) as exc:
                     output = f"Invalid action: {exc}"
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": output})
@@ -318,20 +327,22 @@ def run_agent_loop(client: OpenAI, model: str, task: str) -> Outcome:
                     raise ValueError("Multiple or nested actions are not supported")
                 args = validate_action(name, json.dumps({field: value}))
                 if bash:
-                    _, output = execute_bash(args[field])
+                    _, output = execute(args[field])
                 else:
-                    passed, output = check_verification_gate()
+                    passed, output = verify()
                     if passed:
                         print(f"\n[Task Complete]: {value}")
                         return Outcome.COMPLETED
         except ValueError as exc:
             output = f"Invalid action: {exc}"
         messages.append({"role": "user", "content": output})
-    print(f"[!] Reached maximum iterations ({MAX_ITERATIONS}).")
+    print(f"[!] Reached maximum iterations ({limit}).")
     return Outcome.EXHAUSTED
 
 
 def main() -> int:
+    if OpenAI is None:
+        raise RuntimeError("Install requirements-controller.txt to use inference")
     client = OpenAI(base_url=BASE_URL, api_key=API_KEY, timeout=LLM_TIMEOUT, max_retries=2)
     model = get_active_model(client)
     print(f"[*] Connected to LM Studio via {BASE_URL}")

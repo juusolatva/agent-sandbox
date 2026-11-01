@@ -76,3 +76,18 @@ class PreparationTests(unittest.TestCase):
                 sandbox.check_image({'image': 'sha256:example', 'config': {'check': 'sleep 99', 'timeout': 1}})
         self.assertEqual(cleanup.call_args.args[0][:3], ['docker', 'rm', '-f'])
         self.assertTrue(cleanup.call_args.args[0][3].startswith('sandbox-check-'))
+
+    def test_protected_baseline_failure_does_not_publish_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'source').mkdir()
+            (root / 'checks').mkdir()
+            manifest = root / 'project.json'
+            manifest.write_text(json.dumps(dict(name='test', profile='python313',
+                source='source', check='true', verification={'source':'checks', 'command':'false'})))
+            with patch.object(sandbox, 'docker', return_value='sha256:base'), \
+                 patch.object(sandbox, 'check_image'), \
+                 patch('execution.verify', return_value=(1, 'protected check failed')):
+                with self.assertRaises(ValueError):
+                    sandbox.prepare(manifest, root / 'state.json')
+            self.assertFalse((root / 'state.json').exists())

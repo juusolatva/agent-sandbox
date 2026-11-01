@@ -18,3 +18,7 @@ jobs:
       - run: python sandbox.py build ${{ matrix.profile }}
       - run: python sandbox.py prepare examples/${{ matrix.profile }}.json --state artifacts/${{ matrix.profile }}.json
       - run: python sandbox.py check artifacts/${{ matrix.profile }}.json
+      - if: matrix.profile == 'python313'
+        run: SANDBOX_DOCKER_TESTS=1 SANDBOX_TEST_PROFILE=python313 python -m unittest discover -s tests -p test_execution_integration.py -v
+      - if: matrix.profile == 'cpp'
+        run: SANDBOX_DOCKER_TESTS=1 SANDBOX_TEST_PROFILE=cpp python -m unittest discover -s tests -p test_execution_integration.py -k CppSanitizerRegression -v

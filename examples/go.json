@@ -5,5 +5,9 @@
   "prepare": [
     "go mod download"
   ],
-  "check": "GOPROXY=off go test -mod=readonly ./..."
+  "check": "GOPROXY=off go test -mod=readonly ./...",
+  "verification": {
+    "source": "verification/go",
+    "command": "GOPROXY=off go run -mod=readonly /opt/sandbox/verification/check.go"
+  }
 }

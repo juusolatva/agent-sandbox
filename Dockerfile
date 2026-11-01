@@ -18,6 +18,7 @@ RUN --mount=type=secret,id=proxy_ca \
 RUN useradd -m -u 1000 -s /bin/bash agent && \
     mkdir -p /home/agent/workspace && chown -R agent:agent /home/agent
 COPY --chmod=444 agent.py /opt/sandbox/agent.py
+RUN chmod 0755 /opt/sandbox
 USER agent
 WORKDIR /home/agent/workspace
 ENTRYPOINT ["python3", "-u", "/opt/sandbox/agent.py"]

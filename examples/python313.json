@@ -6,5 +6,9 @@
     "python3 -m venv .venv",
     ".venv/bin/python -m pip install pytest==8.4.2"
   ],
-  "check": ".venv/bin/python -m pytest -q"
+  "check": ".venv/bin/python -m pytest -q",
+  "verification": {
+    "source": "verification/python",
+    "command": "python3 -I /opt/sandbox/verification/check.py"
+  }
 }

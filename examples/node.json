@@ -5,5 +5,9 @@
   "prepare": [
     "npm install --package-lock-only --ignore-scripts && npm ci"
   ],
-  "check": "npm ci --offline --ignore-scripts && npm test"
+  "check": "npm ci --offline --ignore-scripts && npm test",
+  "verification": {
+    "source": "verification/node",
+    "command": "node /opt/sandbox/verification/check.js"
+  }
 }
