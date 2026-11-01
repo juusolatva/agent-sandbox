@@ -26,6 +26,7 @@ services:
       - MAX_ITERATIONS=${MAX_ITERATIONS:-20}
       - MAX_HISTORY_MESSAGES=${MAX_HISTORY_MESSAGES:-24}
       - COMMAND_TIMEOUT=${COMMAND_TIMEOUT:-30}
+      - LLM_TIMEOUT=${LLM_TIMEOUT:-120}
       - VERIFY_CMD=${VERIFY_CMD:-}
       - CONTINUOUS=${CONTINUOUS:-0}
     volumes:
@@ -43,6 +44,7 @@ services:
     pids_limit: 128
     mem_limit: 2g
     cpus: 2.0
+    init: true
     stdin_open: true
     tty: true
 

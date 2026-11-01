@@ -2,9 +2,8 @@
 """
 Hybrid Resilient Sandboxed Agent Loop for LM Studio.
 - Uses native OpenAI tool calling for fast, reliable command execution.
-- Automatically falls back to plain-text generation if LM Studio's 'peg-native'
-  grammar parser throws a 400/500 error (common when local models finish a task).
-- Supports native tool_calls, <bash>...</bash> tags, and ```bash code fences.
+- Falls back to explicit text actions for peg-native parser errors.
+- Executes validated native tool calls or single explicit XML actions.
 - Supports infinite iterations (MAX_ITERATIONS=0), sliding-window context trimming,
   deterministic completion verification (VERIFY_CMD), and continuous loop mode (CONTINUOUS=1).
 """
@@ -13,9 +12,13 @@ import itertools
 import json
 import os
 import re
+import selectors
+import signal
 import subprocess
 import sys
 import time
+from enum import IntEnum
+
 from openai import OpenAI
 
 BASE_URL = os.environ.get("OPENAI_BASE_URL", "http://lm-proxy:1234/v1")
@@ -27,10 +30,20 @@ COMMAND_TIMEOUT = int(os.environ.get("COMMAND_TIMEOUT", "30"))
 VERIFY_CMD = os.environ.get("VERIFY_CMD", "").strip()
 CONTINUOUS = os.environ.get("CONTINUOUS", "0").strip().lower() in {"1", "true", "yes"}
 MAX_OUTPUT_CHARS = 8000
+MAX_ACTION_CHARS = 32000
+WORKSPACE = os.environ.get("WORKSPACE", "/home/agent/workspace")
+LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "120"))
+
+
+class Outcome(IntEnum):
+    COMPLETED = 0
+    FAILED = 1
+    EXHAUSTED = 2
+    INTERRUPTED = 130
 
 SYSTEM_PROMPT = """You are an autonomous AI agent running inside an isolated Linux Docker sandbox without internet access.
 Your working directory is /home/agent/workspace.
-Use the `run_bash` tool (or wrap commands in <bash>...</bash>) to inspect files, write scripts, and accomplish the user's goal.
+Use the `run_bash` tool (or emit a single <bash>...</bash> action) to inspect files, write scripts, and accomplish the user's goal.
 When you have verified that the task is complete, call `finish_task` (or wrap your final summary in <done>...</done>)."""
 
 TOOLS = [
@@ -72,7 +85,6 @@ TOOLS = [
 
 BASH_TAG_RE = re.compile(r"<bash>\s*(.*?)\s*</bash>", re.DOTALL | re.IGNORECASE)
 DONE_TAG_RE = re.compile(r"<done>\s*(.*?)\s*</done>", re.DOTALL | re.IGNORECASE)
-CODE_FENCE_RE = re.compile(r"```(?:bash|sh)\s*\n(.*?)\n```", re.DOTALL | re.IGNORECASE)
 
 
 def get_active_model(client: OpenAI) -> str:
@@ -94,36 +106,53 @@ def get_active_model(client: OpenAI) -> str:
 
 
 def execute_bash(command: str, label: str = "sandbox $") -> tuple[int, str]:
-    """Run a shell command with a timeout and truncate excessive output."""
+    """Drain merged output with bounded storage and clean up the process group."""
     print(f"\n[{label}] {command}")
+    retained = bytearray()
+    truncated = False
+    process = None
     try:
-        result = subprocess.run(
-            ["/bin/bash", "-c", command],
-            cwd="/home/agent/workspace",
-            capture_output=True,
-            text=True,
-            timeout=COMMAND_TIMEOUT,
+        process = subprocess.Popen(
+            ["/bin/bash", "-c", command], cwd=WORKSPACE,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
         )
-        output = ""
-        if result.stdout:
-            output += result.stdout
-        if result.stderr:
-            output += f"\n[stderr]\n{result.stderr}"
-        output = output.strip() or "(no output)"
-        full_output = f"Exit code: {result.returncode}\n{output}"
-        returncode = result.returncode
+        deadline = time.monotonic() + COMMAND_TIMEOUT
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, COMMAND_TIMEOUT)
+                for key, _ in selector.select(min(remaining, 0.1)):
+                    chunk = os.read(key.fileobj.fileno(), 65536)
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    available = MAX_OUTPUT_CHARS - len(retained)
+                    retained.extend(chunk[:available])
+                    truncated |= len(chunk) > available
+            process.wait(timeout=max(0.001, deadline - time.monotonic()))
+        returncode = process.returncode
+        status = f"Exit code: {returncode}"
     except subprocess.TimeoutExpired:
-        full_output = f"Error: Command timed out after {COMMAND_TIMEOUT} seconds."
         returncode = 124
+        status = f"Error: Command timed out after {COMMAND_TIMEOUT} seconds."
     except Exception as exc:
-        full_output = f"Error executing command: {exc}"
         returncode = 1
-
-    if len(full_output) > MAX_OUTPUT_CHARS:
-        full_output = (
-            full_output[:MAX_OUTPUT_CHARS]
-            + f"\n... [output truncated to {MAX_OUTPUT_CHARS} chars]"
-        )
+        status = f"Error executing command: {exc}"
+    finally:
+        if process is not None:
+            # Also remove background children after a normally completed shell.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+            process.stdout.close()
+    output = retained.decode("utf-8", errors="replace").strip() or "(no output)"
+    full_output = f"{status}\n{output}"
+    if truncated:
+        full_output += "\n... [output truncated]"
     print(full_output)
     return returncode, full_output
 
@@ -144,7 +173,7 @@ def check_verification_gate() -> tuple[bool, str]:
 
 
 def trim_history(messages: list[dict]) -> list[dict]:
-    """Keep system + initial user task + most recent messages so infinite loops never overflow context."""
+    """Keep system + initial user task + most recent messages with a bounded message count (not a token budget)."""
     if MAX_HISTORY_MESSAGES <= 0 or len(messages) <= MAX_HISTORY_MESSAGES + 2:
         return messages
     head = messages[:2]
@@ -191,7 +220,7 @@ def call_llm_resilient(client: OpenAI, model: str, messages: list[dict]):
     """
     Try calling LM Studio with native tools first.
     If LM Studio's peg-native parser throws a 400/500 error, automatically fall back
-    to tool-free completion so the loop never crashes.
+    to tool-free completion with bounded retries.
     """
     try:
         response = client.chat.completions.create(
@@ -203,6 +232,9 @@ def call_llm_resilient(client: OpenAI, model: str, messages: list[dict]):
         return response.choices[0].message, False
     except Exception as exc:
         err_detail = getattr(getattr(exc, "response", None), "text", str(exc))
+        if "peg-native" not in err_detail.lower():
+            print(f"[!] Inference API error: {err_detail[:200]}", file=sys.stderr)
+            return None, False
         print(f"    [info] Native tool parser error ({err_detail[:120]}...); falling back to text mode.")
         fallback_msgs = flatten_messages_for_fallback(messages)
         for attempt in range(1, 4):
@@ -220,127 +252,87 @@ def call_llm_resilient(client: OpenAI, model: str, messages: list[dict]):
     return None, True
 
 
-def run_agent_loop(client: OpenAI, model: str, task: str) -> None:
-    """Run the Reason -> Act -> Observe loop with hybrid tool + tag execution."""
-    messages: list[dict] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": task},
-    ]
+def validate_action(name: str, arguments: str) -> dict:
+    """Validate untrusted tool arguments before dispatch."""
+    fields = {"run_bash": "command", "finish_task": "summary"}
+    if name not in fields:
+        raise ValueError(f"Unknown tool: {name}")
+    if not isinstance(arguments, str) or len(arguments) > MAX_ACTION_CHARS:
+        raise ValueError("Arguments must be a bounded JSON string")
+    args = json.loads(arguments)
+    field = fields[name]
+    if not isinstance(args, dict) or set(args) != {field}:
+        raise ValueError(f"Expected an object containing only {field}")
+    if not isinstance(args[field], str) or not args[field].strip():
+        raise ValueError(f"{field} must be a nonempty string")
+    return args
 
-    step_iter = itertools.count(1) if MAX_ITERATIONS <= 0 else range(1, MAX_ITERATIONS + 1)
-    max_label = "∞" if MAX_ITERATIONS <= 0 else str(MAX_ITERATIONS)
 
-    for step in step_iter:
+def run_agent_loop(client: OpenAI, model: str, task: str) -> Outcome:
+    """Dispatch explicit actions; completion is a verified, explicit outcome."""
+    messages = [{"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": task}]
+    steps = itertools.count(1) if MAX_ITERATIONS <= 0 else range(1, MAX_ITERATIONS + 1)
+    for step in steps:
         messages = trim_history(messages)
-        print(f"\n--- Step {step}/{max_label} (Model: {model}) ---")
+        print(f"\n--- Step {step} (Model: {model}) ---")
         msg, _ = call_llm_resilient(client, model, messages)
         if msg is None:
-            print("[!] Skipping step after failed retries.")
-            time.sleep(2.0)
-            continue
-
-        content = (msg.content or "").strip()
-        if not content:
-            extra = getattr(msg, "model_extra", {}) or {}
-            content = (extra.get("reasoning_content") or "").strip()
-
-        if content and not getattr(msg, "tool_calls", None):
-            print(f"\n[Agent]: {content}")
-
-        # Case 1: Model returned native tool_calls
-        if getattr(msg, "tool_calls", None):
-            assistant_msg = {
-                "role": "assistant",
-                "content": msg.content or "",
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        },
-                    }
-                    for tc in msg.tool_calls
-                ],
-            }
-            messages.append(assistant_msg)
-
-            for tool_call in msg.tool_calls:
-                fn_name = tool_call.function.name
+            return Outcome.FAILED
+        content = msg.content or ""
+        calls = getattr(msg, "tool_calls", None)
+        if calls:
+            messages.append({"role": "assistant", "content": content, "tool_calls": [
+                {"id": c.id, "type": "function", "function": {
+                    "name": c.function.name, "arguments": c.function.arguments}} for c in calls]})
+            for call in calls:
                 try:
-                    args = json.loads(tool_call.function.arguments or "{}")
-                except json.JSONDecodeError:
-                    args = {}
-
-                if fn_name == "finish_task":
-                    passed, verify_msg = check_verification_gate()
-                    if passed:
-                        summary = args.get("summary", "Task complete.")
-                        print(f"\n[Task Complete]: {summary}")
-                        return
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": verify_msg,
-                        }
-                    )
-                    continue
-
-                if fn_name == "run_bash":
-                    cmd = args.get("command", "")
-                    _, tool_output = execute_bash(cmd)
+                    name = call.function.name
+                    args = validate_action(name, call.function.arguments)
+                    if name == "finish_task":
+                        if len(calls) != 1:
+                            raise ValueError("finish_task must be the only action in a turn")
+                        passed, output = check_verification_gate()
+                        if passed:
+                            print(f"\n[Task Complete]: {args['summary']}")
+                            return Outcome.COMPLETED
+                    else:
+                        _, output = execute_bash(args["command"])
+                except (ValueError, TypeError) as exc:
+                    output = f"Invalid action: {exc}"
+                messages.append({"role": "tool", "tool_call_id": call.id, "content": output})
+            continue
+        # Only a complete, single tag is an action. Prose, fences and reasoning
+        # are never interpreted as commands or implicit success.
+        messages.append({"role": "assistant", "content": content})
+        bash = BASH_TAG_RE.fullmatch(content.strip())
+        done = DONE_TAG_RE.fullmatch(content.strip())
+        output = "Use one explicit run_bash/finish_task call or one <bash>/<done> action."
+        try:
+            if bash or done:
+                match = bash or done
+                name = "run_bash" if bash else "finish_task"
+                field = "command" if bash else "summary"
+                value = match.group(1).strip()
+                if any(tag in value.lower() for tag in ("<bash>", "</bash>", "<done>", "</done>")):
+                    raise ValueError("Multiple or nested actions are not supported")
+                args = validate_action(name, json.dumps({field: value}))
+                if bash:
+                    _, output = execute_bash(args[field])
                 else:
-                    tool_output = f"Unknown tool: {fn_name}"
-
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": tool_output,
-                    }
-                )
-            continue
-
-        # Case 2: Text response (either normal or fallback from peg-native error)
-        bash_match = BASH_TAG_RE.search(content) or CODE_FENCE_RE.search(content)
-        if bash_match:
-            cmd = bash_match.group(1).strip()
-            _, tool_output = execute_bash(cmd)
-            messages.append({"role": "assistant", "content": content})
-            messages.append(
-                {
-                    "role": "user",
-                    "content": f"Command output:\n{tool_output}",
-                }
-            )
-            continue
-
-        done_match = DONE_TAG_RE.search(content)
-        if done_match or content:
-            summary = done_match.group(1).strip() if done_match else content
-            passed, verify_msg = check_verification_gate()
-            if passed:
-                print(f"\n[Task Complete]: {summary}")
-                return
-            messages.append({"role": "assistant", "content": content})
-            messages.append({"role": "user", "content": verify_msg})
-            continue
-
-        # Empty response guard
-        messages.append(
-            {
-                "role": "user",
-                "content": "Your last response was empty. Use `run_bash` (or <bash>...</bash>) to run a command, or `finish_task` (or <done>...</done>) to finish.",
-            }
-        )
-    else:
-        print(f"\n[!] Reached maximum iterations ({MAX_ITERATIONS}). Stopping loop.")
+                    passed, output = check_verification_gate()
+                    if passed:
+                        print(f"\n[Task Complete]: {value}")
+                        return Outcome.COMPLETED
+        except ValueError as exc:
+            output = f"Invalid action: {exc}"
+        messages.append({"role": "user", "content": output})
+    print(f"[!] Reached maximum iterations ({MAX_ITERATIONS}).")
+    return Outcome.EXHAUSTED
 
 
-def main() -> None:
-    client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
+def main() -> int:
+    client = OpenAI(base_url=BASE_URL, api_key=API_KEY, timeout=LLM_TIMEOUT, max_retries=2)
     model = get_active_model(client)
     print(f"[*] Connected to LM Studio via {BASE_URL}")
     print(f"[*] Using model: {model}")
@@ -353,18 +345,19 @@ def main() -> None:
             if CONTINUOUS:
                 print(f"\n================ CONTINUOUS CYCLE #{cycle} ================")
             try:
-                run_agent_loop(client, model, task)
+                outcome = run_agent_loop(client, model, task)
             except Exception as exc:
                 print(f"\n[!] Unexpected error in task loop (recovered): {exc}", file=sys.stderr)
-            if not CONTINUOUS:
-                break
+                outcome = Outcome.FAILED
+            print(f"[*] Run outcome: {outcome.name.lower()}")
+            if not CONTINUOUS or outcome != Outcome.COMPLETED:
+                return int(outcome)
             time.sleep(2.0)
-        return
 
     while True:
         try:
             task = input("\nEnter task for sandboxed agent (or 'exit' to quit): ").strip()
-        except (EOFError, KeyboardInterrupt):
+        except EOFError:
             print("\nExiting.")
             break
         if not task:
@@ -376,6 +369,17 @@ def main() -> None:
         except Exception as exc:
             print(f"\n[!] Unexpected error in task loop (recovered): {exc}", file=sys.stderr)
 
+    return 0
+
+
+def interrupt(signum, frame):
+    """Unwind active command cleanup on container termination."""
+    raise KeyboardInterrupt
+
 
 if __name__ == "__main__":
-    main()
+    signal.signal(signal.SIGTERM, interrupt)
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(Outcome.INTERRUPTED)

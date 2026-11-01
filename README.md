@@ -41,7 +41,7 @@ The `sandbox` service in `docker-compose.yml` enforces:
 - **Read-only harness:** `agent.py` is mounted `:ro` so the LLM cannot modify its own control loop.
 - **Dropped capabilities:** `cap_drop: [ALL]` and `security_opt: ["no-new-privileges:true"]`.
 - **Resource limits:** Capped at `2.0` CPUs, `2g` RAM, and `pids_limit: 128` (prevents fork bombs).
-- **Command timeouts & truncation:** Every bash command has a strict timeout (default `30s`) and output is truncated at `8000` characters so runaway output cannot blow up the LLM's context window.
+- **Command timeouts & truncation:** Every bash command has a timeout (default `30s`) and merged stdout/stderr is drained with at most `8000` bytes retained so runaway output cannot blow up the LLM's context window.
 
 ---
 
@@ -51,8 +51,8 @@ LM Studio's OpenAI server uses a strict internal grammar parser (`peg-native`) w
 
 `agent.py` solves this automatically via `call_llm_resilient`:
 1. **Primary Mode (Native OpenAI Tools):** Calls LM Studio with `run_bash` and `finish_task` tools for fast, structured execution.
-2. **Automatic Fallback (Plain-Text Mode):** If LM Studio throws a `peg-native` parser error, `agent.py` catches it, flattens the conversation history, and immediately retries the request *without* the `tools` parameter so the loop never crashes.
-3. **Multi-Format Parsing:** Understands native `tool_calls`, `<bash>...</bash>` and `<done>...</done>` XML tags, and ```` ```bash ```` markdown blocks.
+2. **Automatic Fallback (Plain-Text Mode):** If LM Studio throws a `peg-native` parser error, `agent.py` catches it, flattens the conversation history, and immediately retries the request *without* the `tools` parameter with bounded retries.
+3. **Multi-Format Parsing:** Understands native `tool_calls`, `<bash>...</bash>` and `<done>...</done>` XML tags, as single explicit actions. Prose, reasoning text, and Markdown fences are not executed.
 
 ---
 
@@ -136,7 +136,7 @@ MAX_ITERATIONS=0 VERIFY_CMD="./run_tests.sh" docker compose run --rm sandbox \
   "Fix all bugs in app.py until ./run_tests.sh passes"
 ```
 
-> **Context Window Protection:** To prevent infinite runs from overflowing LM Studio's context window, `agent.py` automatically trims the message history using a sliding window (`MAX_HISTORY_MESSAGES=24`), always preserving the system prompt, the original task, and the most recent `24` messages.
+> **Context Window Protection:** To reduce history growth, `agent.py` automatically trims the message history using a sliding window (`MAX_HISTORY_MESSAGES=24`), preserving the system prompt, original task, and recent complete exchanges. This message-count limit does not guarantee a fit within the model token budget.
 
 ### Mode B: Continuous Autonomous Loop (`CONTINUOUS=1`)
 If you want the agent to run **forever** in a loop—restarting with a fresh context window after each completed cycle (useful for fuzzing, continuous code improvement, generating synthetic data, or polling a task queue in `./workspace`)—set `CONTINUOUS=1`:
@@ -174,3 +174,34 @@ All settings can be passed on the command line or configured in a `.env` file ne
 | `COMMAND_TIMEOUT` | `30` | Maximum seconds a single bash command can run before being killed |
 | `VERIFY_CMD` | *(empty)* | Optional bash command that must exit `0` before the agent is allowed to finish |
 | `CONTINUOUS` | `0` | Set to `1` to restart the task in an infinite cycle (`while True`) |
+
+
+## Stage 1: harness reliability
+
+Run the regression checks without installing an SDK or starting LM Studio:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+Completion now requires a valid `finish_task` call or a single `<done>` action.
+Text fallback commands must be a single `<bash>` action. Invalid tool arguments
+are returned to the model as errors. Reasoning content and fenced examples are
+never executed. Parser fallback is limited to errors mentioning `peg-native`;
+other inference errors fail the run after the SDK's bounded retries.
+
+Commands drain merged stdout/stderr into a bounded buffer and kill their process
+group when they finish, time out, or are interrupted. Background work cannot be
+kept between commands. Programs deliberately detaching into a new session still
+require the planned worker-container boundary for complete cleanup.
+
+Single-task exit codes are `0` completed, `1` failed, `2` iteration limit, and
+`130` interrupted. Continuous mode proceeds only after a completed cycle; failed
+or exhausted cycles stop with a nonzero exit code. `LLM_TIMEOUT` defaults to 120
+seconds per API request (with at most two SDK retries). `WORKSPACE` can override
+the working directory when running the harness directly outside Compose.
+
+`VERIFY_CMD` still runs in the agent's container and can reference writable
+project files. Independent protected verification, language images, offline
+preparation, and persistent investigation state remain later stages; see
+[the implementation proposal](IMPROVEMENTS.md) and [progress](AGENTS.md).
