@@ -187,6 +187,20 @@ def main():
     run_parser.add_argument('--model', default=os.environ.get('LLM_MODEL'))
     run_parser.add_argument('--steps', type=int, default=20)
     run_parser.add_argument('--timeout', type=float, default=1800)
+    campaign_parser = commands.add_parser('campaign')
+    campaign_commands = campaign_parser.add_subparsers(dest='campaign_command', required=True)
+    campaign_create = campaign_commands.add_parser('create')
+    campaign_create.add_argument('directory')
+    campaign_create.add_argument('state')
+    campaign_create.add_argument('tasks', help='JSON array of task strings')
+    campaign_run = campaign_commands.add_parser('resume')
+    campaign_run.add_argument('directory')
+    campaign_run.add_argument('--max-runs', type=int, required=True)
+    campaign_run.add_argument('--timeout', type=float, default=1800)
+    campaign_run.add_argument('--steps', type=int, default=20)
+    campaign_run.add_argument('--model', default=os.environ.get('LLM_MODEL'))
+    campaign_run.add_argument('--base-url', default=os.environ.get('OPENAI_BASE_URL'))
+    campaign_run.add_argument('--text-actions', action='store_true')
     verify_parser = commands.add_parser('verify')
     verify_parser.add_argument('state')
     verify_parser.add_argument('--candidate')
@@ -194,7 +208,16 @@ def main():
     check_parser.add_argument('state')
     args = parser.parse_args()
     try:
-        if args.command == 'build':
+        if args.command == 'campaign':
+            import campaign
+            if args.campaign_command == 'create':
+                campaign.create(args.directory, args.state, args.tasks)
+            else:
+                reason = campaign.resume(args.directory, args.max_runs, args.timeout, args.steps,
+                                         args.base_url, args.model, args.text_actions)
+                print(f'Campaign stopped: {reason}')
+                raise SystemExit(0 if reason == 'all_completed' else 1)
+        elif args.command == 'build':
             build(args.profile, args.ca)
         elif args.command == 'prepare':
             prepare(args.manifest, args.state, args.ca)

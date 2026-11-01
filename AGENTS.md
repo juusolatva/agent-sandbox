@@ -234,3 +234,9 @@ Additional Stage 3 validation:
   workflows, addressing the four reported mutable action references.
 - Verified the references and whitespace locally; hosted workflows have not run
   with these pins yet.
+
+### 2026-11-01 — Stage 4 campaign foundation
+
+- Confirmed Stage 3 commit `3cc7710` and subsequent glossary and workflow fixes.
+- Added bounded sequential campaigns with durable task and attempt state, exact task deduplication, resume, locking, stop reasons, and retained run artifacts. Each attempt starts from the prepared project.
+- Finding extraction/deduplication, candidate carryover, and automatic scheduling remain future work; see STAGE4.md. Campaign state and outputs require operator review.
