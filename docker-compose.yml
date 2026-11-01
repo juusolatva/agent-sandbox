@@ -31,7 +31,7 @@ services:
       - CONTINUOUS=${CONTINUOUS:-0}
     volumes:
       # Read-only mount for the agent loop script so the LLM cannot overwrite its own harness
-      - ./agent.py:/home/agent/agent.py:ro
+      - ./agent.py:/opt/sandbox/agent.py:ro
       # Shared workspace where the LLM can create, modify, and execute files
       - ./workspace:/home/agent/workspace
     networks:

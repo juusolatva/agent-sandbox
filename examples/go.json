@@ -1,0 +1,9 @@
+{
+  "name": "go-smoke",
+  "source": "fixtures/go",
+  "profile": "go",
+  "prepare": [
+    "go mod download"
+  ],
+  "check": "GOPROXY=off go test -mod=readonly ./..."
+}

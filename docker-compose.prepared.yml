@@ -1,0 +1,9 @@
+# Use through sandbox.py run, which supplies an immutable prepared image ID.
+services:
+  sandbox:
+    image: ${PREPARED_IMAGE:?Set PREPARED_IMAGE to a checked project image ID}
+    build: !reset null
+    volumes: !override
+      - ./agent.py:/opt/sandbox/agent.py:ro
+    mem_limit: ${PROJECT_MEMORY:-4g}
+    pids_limit: 256

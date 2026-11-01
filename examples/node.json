@@ -1,0 +1,9 @@
+{
+  "name": "node-smoke",
+  "source": "fixtures/node",
+  "profile": "node",
+  "prepare": [
+    "npm install --package-lock-only --ignore-scripts && npm ci"
+  ],
+  "check": "npm ci --offline --ignore-scripts && npm test"
+}

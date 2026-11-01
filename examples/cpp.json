@@ -1,0 +1,7 @@
+{
+  "name": "cpp-smoke",
+  "source": "fixtures/cpp",
+  "profile": "cpp",
+  "prepare": [],
+  "check": "g++-12 main.cpp -o /tmp/gcc-smoke && /tmp/gcc-smoke && clang++-14 -g -fsanitize=address,undefined main.cpp -o /tmp/clang-smoke && /tmp/clang-smoke"
+}

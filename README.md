@@ -2,6 +2,10 @@
 
 This setup runs an autonomous local LLM agent loop inside an **offline, locked-down Docker container** in WSL2 while using **LM Studio** running natively on Windows for GPU-accelerated inference.
 
+Stage 2 adds C/C++ (GCC and Clang), Go, Rust, Python 3.13/3.14, and Node.js
+24.22.1 environments. See [language environments and offline preparation](STAGE2.md)
+for project manifests, preparation, smoke checks, and running a prepared project.
+
 ---
 
 ## Architecture & How Offline Isolation Works

@@ -1,0 +1,8 @@
+{
+  "cpp": {"target": "cpp", "probe": "gcc-12 --version && clang-14 --version"},
+  "go": {"target": "go", "probe": "go version"},
+  "rust": {"target": "rust", "probe": "rustc --version && cargo --version"},
+  "python313": {"target": "python", "args": {"PYTHON_IMAGE": "python:3.13.18-slim-bookworm"}, "probe": "python3 --version"},
+  "python314": {"target": "python", "args": {"PYTHON_IMAGE": "python:3.14.10-slim-bookworm"}, "probe": "python3 --version"},
+  "node": {"target": "node", "probe": "node --version && npm --version"}
+}

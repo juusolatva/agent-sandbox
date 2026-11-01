@@ -1,0 +1,10 @@
+{
+  "name": "python313-smoke",
+  "source": "fixtures/python",
+  "profile": "python313",
+  "prepare": [
+    "python3 -m venv .venv",
+    ".venv/bin/python -m pip install pytest==8.4.2"
+  ],
+  "check": ".venv/bin/python -m pytest -q"
+}

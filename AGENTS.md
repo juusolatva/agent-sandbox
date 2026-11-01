@@ -96,3 +96,43 @@ The user authorized proceeding with the proposed improvements in stages.
   history still uses a message-count limit; verification remains in the same
   trust boundary. Language environments, dependency preparation, isolated
   verification, and persistent investigations remain stages 2–4.
+
+### 2026-11-01 — Stage 1 published; Stage 2 started
+
+- Committed Stage 1 as `4f8ddfa` and pushed directly to `origin/main` as
+  requested. User glossary/Claude files were left untracked and untouched.
+- Re-ran all 11 tests and Compose validation before committing.
+- Stage 2 approach: language worker build targets, operator-owned project
+  manifests, networked dependency preparation, and offline smoke checks.
+
+Stage 2 implementation progress:
+
+- Added versioned language targets and an operator CLI for image builds, sanitized
+  source snapshots, dependency preparation, immutable image state, and baseline
+  checks with networking disabled.
+- Added six project fixtures, prepared-image Compose override, usage guide, and
+  a CI matrix. Prepared images retain dependencies without a host source mount.
+- Local unit suite now has 17 passing tests. Base and prepared Compose configs
+  validate. Actual language image builds and offline fixture runs are in progress.
+
+### 2026-11-01 — Stage 2 completed and validated locally
+
+- Built and probed all six language profiles: GCC 12.2 / Clang 14.0.6, Go
+  1.27.3, Rust 1.99.1 with Clippy/rustfmt, Python 3.13.18 and 3.14.10, and
+  Node.js 24.22.1 (npm 11.19.1).
+- Prepared every bundled project and passed each baseline with `--network none`.
+  C/C++ checks cover both compilers and ASan/UBSan; Rust includes Clippy; Python
+  fixtures install pytest 8.4.2 during preparation and run it offline under both
+  interpreters. Go and Node fixtures passed their native test commands.
+- Added host-side baseline deadlines with scoped container cleanup on timeout.
+  The unit suite now includes a regression check for this cleanup.
+- Stage 2 files remain uncommitted. Only Stage 1 was requested for publication.
+- Live LM Studio integration and hosted CI remain untested. Fixtures validate
+  the preparation mechanism, not every real project's dependencies.
+- Prepared agent runs currently discard filesystem edits at exit. Persistent
+  evidence/patch export, separate protected verification, and durable campaign
+  state remain Stages 3 and 4. See STAGE2.md for usage and limitations.
+
+Final Stage 2 checks: all 18 unit tests, both Compose configurations, and
+whitespace validation passed. OpenAI SDK import/client initialization also passed
+inside both Python images without network access.

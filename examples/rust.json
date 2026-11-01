@@ -1,0 +1,9 @@
+{
+  "name": "rust-smoke",
+  "source": "fixtures/rust",
+  "profile": "rust",
+  "prepare": [
+    "cargo generate-lockfile && cargo fetch --locked"
+  ],
+  "check": "cargo test --frozen && cargo clippy --frozen -- -D warnings"
+}

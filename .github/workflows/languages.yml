@@ -1,0 +1,20 @@
+name: Offline language smoke checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [cpp, go, rust, python313, python314, node]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python sandbox.py build ${{ matrix.profile }}
+      - run: python sandbox.py prepare examples/${{ matrix.profile }}.json --state artifacts/${{ matrix.profile }}.json
+      - run: python sandbox.py check artifacts/${{ matrix.profile }}.json

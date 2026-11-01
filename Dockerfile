@@ -1,27 +1,59 @@
-FROM python:3.12-slim
-
-# Install basic CLI tools useful inside the sandbox
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    bash \
-    curl \
-    git \
-    jq \
-    procps \
-    ripgrep \
-    gcc \
-    libc6-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install the OpenAI SDK (used to talk to LM Studio's OpenAI-compatible server)
-RUN pip install --no-cache-dir openai
-
-# Create an unprivileged user (UID 1000 typically matches your default WSL2 user)
+# syntax=docker/dockerfile:1
+ARG PYTHON_IMAGE=python:3.13.18-slim-bookworm
+ARG GO_IMAGE=golang:1.27.3-bookworm
+ARG RUST_IMAGE=rust:1.99.1-slim-bookworm
+ARG NODE_IMAGE=node:24.22.1-bookworm-slim
+FROM ${GO_IMAGE} AS go-source
+FROM ${RUST_IMAGE} AS rust-source
+FROM ${NODE_IMAGE} AS node-source
+FROM ${PYTHON_IMAGE} AS base
+# Optional CA secret supports managed build proxies without baking trust into images.
+RUN --mount=type=secret,id=proxy_ca \
+    apt-get update && apt-get install -y --no-install-recommends \
+    bash ca-certificates curl git jq procps ripgrep build-essential cmake \
+    ninja-build pkg-config && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export PIP_CERT=/run/secrets/proxy_ca; fi; \
+    pip install --no-cache-dir openai==2.6.1
 RUN useradd -m -u 1000 -s /bin/bash agent && \
-    mkdir -p /home/agent/workspace && \
-    chown -R agent:agent /home/agent
-
+    mkdir -p /home/agent/workspace && chown -R agent:agent /home/agent
+COPY --chmod=444 agent.py /opt/sandbox/agent.py
 USER agent
 WORKDIR /home/agent/workspace
+ENTRYPOINT ["python3", "-u", "/opt/sandbox/agent.py"]
 
-# Run the agent loop by default
-ENTRYPOINT ["python3", "-u", "/home/agent/agent.py"]
+FROM base AS cpp
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc-12 g++-12 clang-14 clang-tidy-14 llvm-14 libclang-rt-14-dev \
+    && rm -rf /var/lib/apt/lists/*
+USER agent
+
+FROM base AS go
+COPY --from=go-source /usr/local/go /usr/local/go
+ENV PATH="/usr/local/go/bin:${PATH}" GOTOOLCHAIN=local
+
+FROM base AS rust
+COPY --from=rust-source /usr/local/cargo /usr/local/cargo
+COPY --from=rust-source /usr/local/rustup /usr/local/rustup
+ENV PATH="/usr/local/cargo/bin:${PATH}" RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/home/agent/.cargo
+USER root
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export SSL_CERT_FILE=/run/secrets/proxy_ca; fi; \
+    rustup component add clippy rustfmt && chmod -R go-w /usr/local/rustup /usr/local/cargo && \
+    mkdir -p /home/agent/.cargo && chown -R agent:agent /home/agent/.cargo
+USER agent
+
+FROM base AS node
+COPY --from=node-source /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-source /usr/local/lib/node_modules /usr/local/lib/node_modules
+USER root
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
+    ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+USER agent
+
+# Build with PYTHON_IMAGE=python:3.14.10-slim-bookworm for the 3.14 environment.
+FROM base AS python
+
+# Preserve docker compose build's default target.
+FROM base AS sandbox
