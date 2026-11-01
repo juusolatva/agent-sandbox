@@ -1,7 +1,15 @@
 # Assessment and proposed improvements
 
 Assessed on 2026-11-01 against the initial commit `69e90db`.
-These are recommendations, not implemented runtime features.
+This document preserves the original assessment and its historical code references.
+Implementation progress is recorded in AGENTS.md and STAGE2.md–STAGE4.md. Stages
+1–4 now implement the reliability, prepared-language, protected-execution, and
+bounded-campaign foundations. The broader tool catalog, dependency advisory
+snapshots, token-based context management, inference gateway, comprehensive network
+probes, and storage quotas remain separate follow-on work. Stage 4 adds queued
+selection and progress records, untrusted structured proposals and operator review,
+fresh-worker replay, and stall limits; automatic minimization and scanner-generated
+targets remain extensions.
 
 The existing non-root container, capability restrictions, resource limits, and
 separate inference proxy are useful foundations. The largest improvements for

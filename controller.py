@@ -12,6 +12,7 @@ import time
 import uuid
 
 import agent
+from investigation import RepetitionGuard, Stalled
 from execution import Worker, verify
 
 # This is our own trusted transfer implementation, not project code.
@@ -88,7 +89,7 @@ def run(record, task, artifact_root, base_url=None, model=None, steps=20, timeou
     evidence = Evidence(artifact_root)
     deadline = time.monotonic() + timeout
     runtime_hash = hashlib.sha256(b''.join((Path(__file__).parent / name).read_bytes()
-        for name in ('controller.py', 'execution.py', 'agent.py', 'docker/transfer.py'))).hexdigest()
+        for name in ('controller.py', 'execution.py', 'agent.py', 'investigation.py', 'docker/transfer.py'))).hexdigest()
     result = {'runtime_hash': runtime_hash, 'command_timeout': agent.COMMAND_TIMEOUT,
               'llm_timeout': agent.LLM_TIMEOUT, 'max_response_tokens': 4096, 'status': 'failed', 'image': record['image'], 'source_hash': record['source_hash'],
               'verification_hash': record['verification_hash'], 'task': task, 'steps': steps,
@@ -111,8 +112,11 @@ def run(record, task, artifact_root, base_url=None, model=None, steps=20, timeou
             transfer.validate(before)
             evidence.save('original.json', before)
 
+            repetition = RepetitionGuard()
+
             def execute(command, label='sandbox $'):
                 code, output = worker.execute(command, timeout=agent.COMMAND_TIMEOUT)
+                repetition.observe(command, code, output)
                 return code, f"Exit code: {code}\n{output}"
 
             def gate():
@@ -165,6 +169,8 @@ def run(record, task, artifact_root, base_url=None, model=None, steps=20, timeou
         outcome = agent.Outcome.FAILED
         result['status'] = 'failed'
         result['error'] = str(exc)[:4000]
+        if isinstance(exc, Stalled):
+            result['stop_reason'] = 'repeated_command'
     finally:
         if connected and client is not None:
             client.close()

@@ -200,6 +200,18 @@ def main():
     campaign_run.add_argument('directory')
     campaign_run.add_argument('--max-runs', type=int, required=True)
     campaign_run.add_argument('--max-attempts', type=int, default=3)
+    campaign_run.add_argument('--budget', type=float, help='Overall invocation deadline in seconds')
+    campaign_run.add_argument('--continue-on-failure', action='store_true')
+    campaign_run.add_argument('--stall-limit', type=int, default=2)
+    campaign_status = campaign_commands.add_parser('status')
+    campaign_status.add_argument('directory')
+    campaign_review = campaign_commands.add_parser('review')
+    campaign_review.add_argument('directory')
+    campaign_review.add_argument('target', type=int)
+    campaign_review.add_argument('attempt', type=int)
+    campaign_review.add_argument('finding', type=int)
+    campaign_review.add_argument('--status', required=True,
+                                 choices=['confirmed', 'suspected', 'rejected', 'blocked', 'no_finding'])
     campaign_replay = campaign_commands.add_parser('replay')
     campaign_replay.add_argument('directory')
     campaign_replay.add_argument('run', help='Run artifact directory relative to campaign')
@@ -221,13 +233,19 @@ def main():
             import campaign
             if args.campaign_command == 'create':
                 campaign.create(args.directory, args.state, args.tasks)
+            elif args.campaign_command == 'status':
+                print(json.dumps(campaign.status(args.directory), indent=2))
+            elif args.campaign_command == 'review':
+                print(campaign.review(args.directory, args.target, args.attempt, args.finding, args.status))
             elif args.campaign_command == 'replay':
                 print(campaign.replay(args.directory, args.run, Path(args.reproducer).read_text(), args.timeout))
             elif args.campaign_command == 'finding':
                 print(campaign.record_finding(args.directory, json.loads(Path(args.finding).read_text())))
             else:
                 reason = campaign.resume(args.directory, args.max_runs, args.timeout, args.steps,
-                                         args.base_url, args.model, args.text_actions, max_attempts=args.max_attempts)
+                                         args.base_url, args.model, args.text_actions, max_attempts=args.max_attempts,
+                                         budget=args.budget, continue_on_failure=args.continue_on_failure,
+                                         stall_limit=args.stall_limit)
                 print(f'Campaign stopped: {reason}')
                 raise SystemExit(0 if reason == 'all_completed' else 1)
         elif args.command == 'build':

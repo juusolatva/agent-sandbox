@@ -252,3 +252,32 @@ Additional Stage 3 validation:
 - Added persistent per-task attempt limits (default three) to bound repeated unsuccessful investigations across resumes.
 - Validation: 37 tests discovered, 31 passed and 6 opt-in Docker tests skipped. New tests cover separate replay workers, retained results, recorded-run selection, and retry limits. Actual Docker replay and live inference were not run in this update.
 - Replay status records an exit-code comparison, not independent confirmation of a bug. Automated target selection, finding extraction, coverage tracking, repeated-command detection, and reproducer minimization remain outstanding.
+
+### 2026-11-01 — Stage 4 completed and validated locally
+
+- Added structured operator targets with scopes and priorities, persistent fair
+  selection, invocation time budgets, explicit continued selection after failures,
+  recorded attempted scopes, and terminal reasons when no targets remain eligible.
+- Added repeated command/result termination in the controller and unchanged-source
+  detection across unsuccessful attempts. Stalled targets are retained and skipped.
+- Campaign prompts request hypotheses, necessary conditions, and structured reports.
+  Bounded candidate-report imports preserve untrusted proposals and exact
+  location/root-cause grouping. Only explicit operator review writes decisions to
+  the reviewed findings ledger. Model statuses, host paths, and reproducer text
+  cannot authorize execution or confirmation.
+- New campaigns check prepared-state identity. State replacement also syncs the
+  containing directory. Existing version 1 campaigns remain compatible without the
+  new integrity check.
+- Validation: all 45 tests passed with Docker enabled, including all six protected
+  language baselines, the sanitizer regression, proposal import/review, known
+  original failure and candidate success on the synthetic fixture, replay timeout
+  handling, repeated-command termination, and retained artifacts. Hosted CI and
+  live model campaign quality were not tested in this update.
+- Retained an additional synthetic workflow/replay at
+  `artifacts/campaigns/stage4-validation-7a8b02b6/`. Its model is a fake client; its
+  proposed finding was explicitly rejected. The expected replay failure is the
+  fixture's missing evidence file, not a discovered application vulnerability.
+- Stage 4's bounded campaign workflow is complete locally. Automatic reproducer
+  minimization, scanner-generated targets, semantic deduplication, and candidate
+  carryover remain optional extensions. Storage quotas and other limitations from
+  Stage 3 remain. See STAGE4.md for commands, budgets, trust boundaries, and limits.

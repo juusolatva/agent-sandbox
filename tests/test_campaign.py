@@ -87,4 +87,71 @@ class CampaignTests(unittest.TestCase):
                 campaign.resume(root / 'campaign', 1, 1, 1, runner=runner, max_attempts=2)
             self.assertEqual(len(calls), 2)
             data = json.loads((root / 'campaign' / 'campaign.json').read_text())
-            self.assertEqual(data['stop_reason'], 'attempt_limit')
+            self.assertEqual(data['stop_reason'], 'no_eligible_targets')
+
+    def test_scheduler_tracks_proposals_and_stalls_without_starving_new_targets(self):
+        from test_investigation import finding_report, report_bundle
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'state').write_text('{}')
+            (root / 'tasks').write_text(json.dumps([
+                {'task': 'parser', 'scope': 'parse.c', 'priority': 9},
+                {'task': 'decoder', 'scope': 'decode.c'}]))
+            directory = root / 'campaign'
+            campaign.create(directory, root / 'state', root / 'tasks')
+            prompts = []
+            def runner(record, task, artifacts, *args, **kwargs):
+                prompts.append(task)
+                run = Path(artifacts) / 'run'
+                run.mkdir()
+                (run / 'result.json').write_text('{"status":"exhausted"}')
+                (run / 'candidate.json').write_text(json.dumps(report_bundle(finding_report())))
+                return 2
+            campaign.resume(directory, 1, 1, 1, runner=runner)
+            campaign.resume(directory, 1, 1, 1, runner=runner)
+            self.assertTrue(prompts[0].startswith('parser'))
+            self.assertTrue(prompts[1].startswith('decoder'))
+            campaign.resume(directory, 2, 1, 1, runner=runner, continue_on_failure=True)
+            state = campaign.status(directory)
+            self.assertTrue(all(t['stalled'] and t['attempted_at'] for t in state['campaign']['tasks']))
+            self.assertEqual(len(state['proposed_findings']), 1)
+            self.assertFalse((directory / 'findings.json').exists())
+            campaign.review(directory, 0, 0, 0, 'rejected')
+            ledger = json.loads((directory / 'findings.json').read_text())
+            self.assertEqual(ledger[0]['observations'][0]['status'], 'rejected')
+
+    def test_state_identity_and_finite_budgets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'state').write_text('{}')
+            (root / 'tasks').write_text('["target"]')
+            directory = root / 'campaign'
+            campaign.create(directory, root / 'state', root / 'tasks')
+            with self.assertRaises(ValueError):
+                campaign.resume(directory, 1, 1, 1, budget=float('nan'))
+            (directory / 'prepared.json').write_text('{"changed":true}')
+            with self.assertRaises(ValueError):
+                campaign.resume(directory, 1, 1, 1)
+
+    def test_deadline_stops_selection_and_interruption_is_durable(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'state').write_text('{}')
+            (root / 'tasks').write_text('["one", "two"]')
+            directory = root / 'campaign'
+            campaign.create(directory, root / 'state', root / 'tasks')
+            calls = []
+            def runner(record, task, artifacts, url, model, steps, timeout, **kwargs):
+                calls.append(timeout)
+                raise KeyboardInterrupt
+            with self.assertRaises(KeyboardInterrupt):
+                campaign.resume(directory, 1, 10, 2, runner=runner, budget=3)
+            data = json.loads((directory / 'campaign.json').read_text())
+            self.assertEqual(data['stop_reason'], 'interrupted')
+            self.assertEqual(data['tasks'][0]['attempts'][0]['status'], 'interrupted')
+            self.assertLessEqual(calls[0], 3)
+            with patch('campaign.time.monotonic', side_effect=[0, 2]):
+                reason = campaign.resume(directory, 2, 10, 2, runner=runner, budget=1)
+            self.assertEqual(reason, 'time_budget')
+            self.assertEqual(len(calls), 1)
