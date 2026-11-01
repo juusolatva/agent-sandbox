@@ -227,3 +227,10 @@ Additional Stage 3 validation:
 - Verification: definitions reviewed against code and existing regression cases;
   documentation whitespace and local glossary links checked. Runtime tests were
   not rerun for this documentation-only change.
+
+### 2026-11-01 — GitHub Actions references pinned
+
+- Pinned checkout v4.2.2 and setup-python v5.6.0 to full commit SHAs in both
+  workflows, addressing the four reported mutable action references.
+- Verified the references and whitespace locally; hosted workflows have not run
+  with these pins yet.
