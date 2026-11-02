@@ -120,7 +120,7 @@ class RunSession:
         self.text_actions = text_actions
         self.repetition = RepetitionGuard()
 
-    def execute(self, command, label='sandbox $'):
+    def execute(self, command):
         # Compare the complete output stream, not the truncated text shown to the model.
         digest = hashlib.sha256()
         code, output = self.worker.execute(command, timeout=agent.COMMAND_TIMEOUT, digest=digest)
