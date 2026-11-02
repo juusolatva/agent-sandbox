@@ -203,9 +203,11 @@ under `coverage`, and uploads `coverage.xml` to SonarQube Cloud. To reproduce
 the coverage report locally (coverage settings live in `pyproject.toml`):
 
 ```bash
+python3 -m pip install --only-binary :all: coverage==7.16.2
 python3 sandbox.py build python313
 python3 sandbox.py prepare examples/python313.json --state artifacts/python313.json
 SANDBOX_DOCKER_TESTS=1 SANDBOX_TEST_PROFILE=python313 python3 -m coverage run -m unittest discover -s tests
+python3 -m coverage xml
 python3 -m coverage report
 ```
 

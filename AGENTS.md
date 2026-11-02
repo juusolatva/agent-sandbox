@@ -354,3 +354,11 @@ Additional Stage 3 validation:
 - Validation: local coverage run, 51 tests passed (1 skipped), 76% combined
   line/branch coverage; actionlint passed for all workflows. The hosted
   workflow and scan run on the PR.
+- Added `.github/workflows/osv-scanner.yml` from the user's template: OSV-Scanner
+  reusable workflows v2.7.0 (SHA verified against the annotated tag, released
+  2026-10-12) for PRs/merge groups and push/schedule/manual runs, scanning
+  `requirements-controller.txt` as a requirements lockfile plus a recursive
+  walk. Local osv-scanner run found go.mod and the controller pins with no
+  known vulnerabilities; actionlint passed.
+- Applied Greptile's README fix: the local coverage recipe now installs the
+  pinned coverage version and writes coverage.xml.
