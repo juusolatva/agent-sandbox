@@ -103,20 +103,10 @@ def text_action_body(text: str, tag: str):
 
 
 def get_active_model(client: OpenAI) -> str:
-    """Return the configured model name or auto-detect a chat model from LM Studio."""
+    """Return the explicitly configured model; never guess one from the server."""
     if MODEL_ENV:
         return MODEL_ENV
-    try:
-        models = client.models.list()
-        chat_models = [
-            m.id for m in models.data if not m.id.startswith("text-embedding")
-        ]
-        if chat_models:
-            return chat_models[0]
-    except Exception as exc:
-        print(f"[!] Could not reach LM Studio at {BASE_URL}: {exc}", file=sys.stderr)
-        sys.exit(1)
-    print("[!] No chat models appear to be available in LM Studio.", file=sys.stderr)
+    print("[!] Set LLM_MODEL to the LM Studio model ID to use.", file=sys.stderr)
     sys.exit(1)
 
 
