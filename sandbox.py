@@ -15,6 +15,7 @@ MIN_PYTHON = (3, 13)
 ROOT = Path(__file__).resolve().parent
 PROFILES = json.loads((ROOT / 'docker/images.json').read_text())
 BASH = '/bin/bash'
+ADVISORY_ECOSYSTEMS = ('Go', 'PyPI', 'crates.io', 'npm')
 EXCLUDED = {'.git', '.ssh', '.aws', '.codex', '.agents', '__pycache__', '.venv',
             'node_modules', 'target', 'artifacts', '.npmrc', '.pypirc', '.netrc'}
 
@@ -246,11 +247,39 @@ def main():
     verify_parser.add_argument('--candidate')
     check_parser = commands.add_parser('check')
     check_parser.add_argument('state')
+    advisories_parser = commands.add_parser('advisories')
+    advisory_commands = advisories_parser.add_subparsers(dest='advisory_command', required=True)
+    advisory_fetch = advisory_commands.add_parser('fetch', help='Download a dated OSV snapshot (needs network)')
+    advisory_fetch.add_argument('snapshot', help='Snapshot directory to create or update')
+    advisory_fetch.add_argument('--ecosystem', action='append', dest='ecosystems', choices=ADVISORY_ECOSYSTEMS,
+                                help='Repeatable; defaults to all supported ecosystems')
+    advisory_scan = advisory_commands.add_parser('scan', help='Scan a prepared project offline against a snapshot')
+    advisory_scan.add_argument('state')
+    advisory_scan.add_argument('snapshot')
+    advisory_scan.add_argument('--output', help='Write the JSON report here')
+    advisory_scan.add_argument('--max-age-days', type=float, default=7)
     args = parser.parse_args()
     try:
         run_command(args)
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         parser.exit(exc.returncode if isinstance(exc, subprocess.CalledProcessError) else 1, f'{exc}\n')
+
+
+def run_advisories_command(args):
+    import advisories
+    if args.advisory_command == 'fetch':
+        metadata = advisories.fetch(args.snapshot, tuple(args.ecosystems or advisories.ECOSYSTEMS))
+        print(f"Snapshot {args.snapshot} fetched at {metadata['fetched_at']}: "
+              f"{', '.join(sorted(metadata['databases']))}")
+        return
+    record = json.loads(Path(args.state).read_text())
+    report = advisories.scan_image(record['image'], args.snapshot, args.max_age_days)
+    text = json.dumps(report, indent=2) + '\n'
+    if args.output:
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.output).write_text(text)
+    print(advisories.summarize(report))
+    raise SystemExit(advisories.report_status(report))
 
 
 def run_campaign_command(args):
@@ -297,6 +326,8 @@ def run_controller_command(args):
 def run_command(args):
     if args.command == 'campaign':
         run_campaign_command(args)
+    elif args.command == 'advisories':
+        run_advisories_command(args)
     elif args.command == 'build':
         build(args.profile, args.ca)
     elif args.command == 'prepare':

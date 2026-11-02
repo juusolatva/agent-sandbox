@@ -32,6 +32,14 @@ USER agent
 FROM base AS go
 COPY --from=go-source /usr/local/go /usr/local/go
 ENV PATH="/usr/local/go/bin:${PATH}" GOTOOLCHAIN=local
+USER root
+# Analysis tools are installed at image build time; the module cache is not kept.
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export SSL_CERT_FILE=/run/secrets/proxy_ca; fi; \
+    GOPATH=/tmp/gopath GOBIN=/usr/local/bin GOFLAGS=-trimpath \
+    go install honnef.co/go/tools/cmd/staticcheck@v0.8.2 && \
+    chmod -R u+w /tmp/gopath && rm -rf /tmp/gopath /root/.cache
+USER agent
 
 FROM base AS rust
 COPY --from=rust-source /usr/local/cargo /usr/local/cargo
@@ -48,12 +56,20 @@ FROM base AS node
 COPY --from=node-source /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-source /usr/local/lib/node_modules /usr/local/lib/node_modules
 USER root
-RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
-    ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; \
+    ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
+    ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx && \
+    npm install --global --ignore-scripts --no-audit --no-fund eslint@10.13.0 && npm cache clean --force
 USER agent
 
 # Build with PYTHON_IMAGE=python:3.14.10-slim-bookworm for the 3.14 environment.
 FROM base AS python
+USER root
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export PIP_CERT=/run/secrets/proxy_ca; fi && \
+    pip install --no-cache-dir --only-binary :all: hypothesis==6.170.1 ruff==0.17.1
+USER agent
 
 # Preserve docker compose build's default target.
 FROM base AS sandbox

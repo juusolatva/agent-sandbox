@@ -30,15 +30,23 @@ Partially implemented:
   pinned to `alpine/socat:1.8.1.1` by digest, and both Compose services have
   `read_only`, dropped capabilities and `init`. Fixed container names are gone.
   The socat proxy still forwards arbitrary TCP (see the HTTP gateway item below).
-- Of the section 2 analysis tools, only clang-tidy is installed.
+- Analysis tools (2026-11-02): clang-tidy, Staticcheck, Ruff, Hypothesis and ESLint
+  are installed and pinned; libFuzzer and Go native fuzzing were confirmed offline.
+  govulncheck, cargo-audit and cargo-fuzz are not installed (their databases need
+  their own offline mirrors; see STAGE2.md).
+
+- Offline dependency advisory snapshots (2026-11-02): `sandbox.py advisories fetch`
+  stores dated, hash-verified OSV databases for Go, PyPI, crates.io and npm;
+  `advisories scan` extracts lockfiles from a prepared image and checks them with
+  OSV-Scanner offline, reporting unavailable checks explicitly. govulncheck,
+  cargo-audit and pip-audit are not integrated (see STAGE2.md).
 
 Open:
 
 - Compact investigation summary outside the transcript (history trimming just drops
   old messages; the token budget is an estimate, not a tokenizer count).
-- Additional analysis tools: Staticcheck, govulncheck, cargo-audit, Ruff,
-  Hypothesis, ESLint, and coverage-guided fuzzing.
-- Offline dependency advisory snapshots.
+- Remaining analysis tools: govulncheck and cargo-audit with offline databases,
+  cargo-fuzz, and fuzzing for Python and Node.
 - Restricted HTTP inference gateway and comprehensive network probes.
 - Storage quotas.
 - Optional Stage 4 extensions: automatic reproducer minimization,
@@ -124,7 +132,8 @@ separate resource profile with substantially larger build storage and budgets.
 ### 3. Separate dependency preparation from offline investigation
 
 *Status: preparation and offline baselines implemented in Stage 2; offline
-advisory database snapshots are open.*
+advisory snapshots implemented via OSV-Scanner (2026-11-02); language-specific
+auditors (govulncheck, cargo-audit, pip-audit) remain open.*
 
 Installing compilers alone will not make arbitrary projects build offline.
 Provide a preparation command that resolves locked inputs and creates an
