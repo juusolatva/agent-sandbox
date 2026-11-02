@@ -147,12 +147,21 @@ class AgentTests(unittest.TestCase):
         self.assertLess(len(trimmed), len(history))
         self.assertEqual(trimmed[-1], history[-1])
         self.assertNotEqual(trimmed[2]['role'], 'tool')
+        self.assertEqual(trimmed[-2]['role'], 'assistant')
         self.assertLessEqual(sum(map(agent.estimate_tokens, trimmed)), 3000 + agent.estimate_tokens(history[-1]))
 
     def test_newest_message_survives_even_if_oversized(self):
         history = [{'role': 'system', 'content': 's'}, {'role': 'user', 'content': 't'},
                    {'role': 'user', 'content': 'y' * 100000}]
         with patch.object(agent, 'MAX_CONTEXT_TOKENS', 100):
+            self.assertEqual(agent.trim_history(history), history)
+
+    def test_oversized_latest_tool_exchange_is_kept_whole(self):
+        call = {'id': 'c', 'function': {'name': 'run_bash', 'arguments': '{"command":"cat big"}'}}
+        history = [{'role': 'system', 'content': 's'}, {'role': 'user', 'content': 't'},
+                   {'role': 'assistant', 'content': '', 'tool_calls': [call]},
+                   {'role': 'tool', 'tool_call_id': 'c', 'content': 'z' * 8000}]
+        with patch.object(agent, 'MAX_CONTEXT_TOKENS', 2000):
             self.assertEqual(agent.trim_history(history), history)
 
     def test_zero_limits_disable_trimming(self):

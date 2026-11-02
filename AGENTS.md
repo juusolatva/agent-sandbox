@@ -427,10 +427,13 @@ Additional Stage 3 validation:
 
 - `trim_history` now also bounds retained history by an estimated token budget
   (`MAX_CONTEXT_TOKENS`, default 12000, about 3 characters per token; 0 disables),
-  keeping the system prompt, task and newest message and dropping orphaned tool
-  results. The estimate is approximate (no tokenizer offline), ignores the tool
+  keeping the system prompt, task and newest complete tool exchange and never starting on an orphaned tool
+  result. The estimate is approximate (no tokenizer offline), ignores the tool
   schema, and a single oversized newest message can still exceed the budget.
   README corrected; Compose and `.env.example` pass the new setting.
 - Validation: 3 new tests in `tests/test_agent.py` pass with the existing ones
   (17 in that module). No live inference was run. Compaction summaries remain open.
 - Added a License section to README.md pointing at the MIT `LICENSE` file.
+- PR #8 review follow-up: an oversized newest tool result was dropped together with
+  its assistant call's orphan check, hiding the latest output. Trimming now extends
+  backwards to keep the whole newest exchange; regression test added (68 tests, 8 skipped).

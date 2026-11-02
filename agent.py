@@ -189,32 +189,29 @@ def estimate_tokens(message: dict) -> int:
     return size // CHARS_PER_TOKEN + 4
 
 
-def drop_orphaned_tool_results(tail: list[dict]) -> list[dict]:
-    """Avoid starting on a 'tool' response whose assistant tool_calls were trimmed away."""
-    while tail and tail[0].get("role") == "tool":
-        tail = tail[1:]
-    return tail
-
-
 def trim_history(messages: list[dict]) -> list[dict]:
     """Keep system + task, then the most recent messages within the message and estimated-token limits.
 
-    The newest message is always kept, so a single oversized message can still exceed the budget.
+    The newest message and its assistant tool call are always kept, and the window never starts
+    on a 'tool' result, so an oversized newest exchange can still exceed the budget.
     """
-    head = messages[:2]
-    tail = messages[2:]
+    head, rest = messages[:2], messages[2:]
+    start = 0
     if MAX_HISTORY_MESSAGES > 0:
-        tail = tail[-MAX_HISTORY_MESSAGES:]
-    if MAX_CONTEXT_TOKENS > 0:
+        start = max(0, len(rest) - MAX_HISTORY_MESSAGES)
+    if MAX_CONTEXT_TOKENS > 0 and rest:
         remaining = MAX_CONTEXT_TOKENS - sum(estimate_tokens(m) for m in head)
-        kept: list[dict] = []
-        for message in reversed(tail):
-            remaining -= estimate_tokens(message)
-            if remaining < 0 and kept:
+        budget_start = len(rest)
+        for index in range(len(rest) - 1, start - 1, -1):
+            remaining -= estimate_tokens(rest[index])
+            if remaining < 0 and budget_start < len(rest):
                 break
-            kept.append(message)
-        tail = kept[::-1]
-    return head + drop_orphaned_tool_results(tail)
+            budget_start = index
+        start = budget_start
+    # Include the assistant tool call that a leading 'tool' result belongs to.
+    while 0 < start < len(rest) and rest[start].get("role") == "tool":
+        start -= 1
+    return head + rest[start:]
 
 
 def assistant_text(message: dict) -> str:
