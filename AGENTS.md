@@ -362,3 +362,7 @@ Additional Stage 3 validation:
   known vulnerabilities; actionlint passed.
 - Applied Greptile's README fix: the local coverage recipe now installs the
   pinned coverage version and writes coverage.xml.
+- First hosted OSV run scanned both manifests but failed uploading SARIF:
+  code scanning is not enabled on this private repository (requires GitHub
+  Code Security). SARIF upload is now gated on the `OSV_UPLOAD_SARIF`
+  repository variable (off by default); scans still fail on vulnerabilities.
