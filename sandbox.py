@@ -7,11 +7,14 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import uuid
 
+MIN_PYTHON = (3, 13)
 ROOT = Path(__file__).resolve().parent
 PROFILES = json.loads((ROOT / 'docker/images.json').read_text())
+BASH = '/bin/bash'
 EXCLUDED = {'.git', '.ssh', '.aws', '.codex', '.agents', '__pycache__', '.venv',
             'node_modules', 'target', 'artifacts', '.npmrc', '.pypirc', '.netrc'}
 
@@ -22,9 +25,12 @@ def docker(*args, capture=False, timeout=None):
     return result.stdout.strip() if capture else None
 
 
-def load_project(path):
-    path = Path(path).resolve()
-    config = json.loads(path.read_text())
+def image_id(tag):
+    return docker('image', 'inspect', tag, '--format', '{{.Id}}', capture=True)
+
+
+def validate_fields(config):
+    """Validate a manifest's scalar fields, preparation commands, and resource limits."""
     allowed = {'name', 'source', 'profile', 'prepare', 'check', 'memory', 'cpus', 'pids', 'timeout', 'verification'}
     if not isinstance(config, dict) or set(config) - allowed:
         raise ValueError('Project manifest must be an object with documented fields')
@@ -40,17 +46,28 @@ def load_project(path):
         value = config.get(field, default)
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value < 100000:
             raise ValueError(f'{field} must be a positive bounded number')
+
+
+def validate_verification(base, verification):
+    """Validate an optional protected-verification section relative to the manifest."""
+    if verification is None:
+        return
+    if not isinstance(verification, dict) or set(verification) != {'source', 'command'}:
+        raise ValueError('verification requires source and command')
+    if any(not isinstance(v, str) or not v.strip() for v in verification.values()):
+        raise ValueError('verification fields must be nonempty strings')
+    if not (base / verification['source']).resolve().is_dir():
+        raise ValueError('Verification source directory does not exist')
+
+
+def load_project(path):
+    path = Path(path).resolve()
+    config = json.loads(path.read_text())
+    validate_fields(config)
     source = (path.parent / config['source']).resolve()
     if not source.is_dir():
         raise ValueError(f'Source directory does not exist: {source}')
-    verification = config.get('verification')
-    if verification is not None:
-        if not isinstance(verification, dict) or set(verification) != {'source', 'command'}:
-            raise ValueError('verification requires source and command')
-        if any(not isinstance(v, str) or not v.strip() for v in verification.values()):
-            raise ValueError('verification fields must be nonempty strings')
-        if not (path.parent / verification['source']).resolve().is_dir():
-            raise ValueError('Verification source directory does not exist')
+    validate_verification(path.parent, config.get('verification'))
     return config, source
 
 
@@ -93,16 +110,15 @@ def build(profile, ca=None):
     if ca:
         args.extend(['--secret', f'id=proxy_ca,src={Path(ca).resolve()}'])
     docker(*args, str(ROOT))
-    image = docker('image', 'inspect', f'agent-sandbox/{profile}:stage2', '--format', '{{.Id}}', capture=True)
+    image = image_id(f'agent-sandbox/{profile}:stage2')
     docker('run', '--rm', '--network', 'none', '--cap-drop', 'ALL',
-           '--security-opt', 'no-new-privileges:true', '--entrypoint', '/bin/bash',
+           '--security-opt', 'no-new-privileges:true', '--entrypoint', BASH,
            image, '-e', '-c', spec['probe'])
 
 
 def prepare(manifest, state, ca=None):
     config, source = load_project(manifest)
-    base = docker('image', 'inspect', f"agent-sandbox/{config['profile']}:stage2",
-                  '--format', '{{.Id}}', capture=True)
+    base = image_id(f"agent-sandbox/{config['profile']}:stage2")
     with tempfile.TemporaryDirectory(prefix='sandbox-prepare-') as temporary:
         context = Path(temporary)
         snapshot(source, context / 'source')
@@ -126,15 +142,15 @@ def prepare(manifest, state, ca=None):
                      'GIT_SSL_CAINFO=/run/secrets/proxy_ca CARGO_HTTP_CAINFO=/run/secrets/proxy_ca '
                      'NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; ')
             lines.append('RUN --mount=type=secret,id=proxy_ca ' + json.dumps(
-                ['/bin/bash', '-e', '-c', trust + command]))
+                [BASH, '-e', '-c', trust + command]))
         (context / 'Dockerfile').write_text('\n'.join(lines) + '\n')
         tag = f'agent-sandbox/prepared:{key}'
         args = ['build', '-t', tag]
         if ca:
             args.extend(['--secret', f'id=proxy_ca,src={Path(ca).resolve()}'])
         docker(*args, str(context))
-        image = docker('image', 'inspect', tag, '--format', '{{.Id}}', capture=True)
-        if docker('image', 'inspect', base_tag, '--format', '{{.Id}}', capture=True) != base:
+        image = image_id(tag)
+        if image_id(base_tag) != base:
             raise ValueError('Base image changed during preparation; retry')
     record = {'image': image, 'base': base, 'source_hash': source_hash, 'verification_hash': verification_hash, 'config': config}
     # Store state only after a genuinely offline baseline succeeds.
@@ -156,7 +172,7 @@ def check_image(record):
         docker('run', '--name', name, '--rm', '--init', '--network', 'none', '--cap-drop', 'ALL',
                '--security-opt', 'no-new-privileges:true', '--memory', str(config.get('memory', '4g')),
                '--cpus', str(config.get('cpus', 2)), '--pids-limit', str(config.get('pids', 256)),
-               '--entrypoint', '/bin/bash', record['image'], '-e', '-c', config['check'],
+               '--entrypoint', BASH, record['image'], '-e', '-c', config['check'],
                timeout=config.get('timeout', 600))
     finally:
         # A host-side timeout must not leave a build/test running in Docker.
@@ -166,6 +182,9 @@ def check_image(record):
 
 
 def main():
+    if sys.version_info < MIN_PYTHON:
+        raise SystemExit(f'sandbox.py requires Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]} or newer; '
+                         f'found {sys.version_info[0]}.{sys.version_info[1]}')
     import signal
     from agent import interrupt
     signal.signal(signal.SIGTERM, interrupt)
@@ -217,44 +236,59 @@ def main():
     check_parser.add_argument('state')
     args = parser.parse_args()
     try:
-        if args.command == 'campaign':
-            import campaign
-            if args.campaign_command == 'create':
-                campaign.create(args.directory, args.state, args.tasks)
-            elif args.campaign_command == 'replay':
-                print(campaign.replay(args.directory, args.run, Path(args.reproducer).read_text(), args.timeout))
-            elif args.campaign_command == 'finding':
-                print(campaign.record_finding(args.directory, json.loads(Path(args.finding).read_text())))
-            else:
-                reason = campaign.resume(args.directory, args.max_runs, args.timeout, args.steps,
-                                         args.base_url, args.model, args.text_actions, max_attempts=args.max_attempts)
-                print(f'Campaign stopped: {reason}')
-                raise SystemExit(0 if reason == 'all_completed' else 1)
-        elif args.command == 'build':
-            build(args.profile, args.ca)
-        elif args.command == 'prepare':
-            prepare(args.manifest, args.state, args.ca)
-        elif args.command == 'verify':
-            from execution import verify
-            from controller import transfer
-            record = json.loads(Path(args.state).read_text())
-            candidate = None
-            if args.candidate:
-                candidate = transfer.validate(json.loads(Path(args.candidate).read_text()))
-            code, output = verify(record, candidate)
-            print(output)
-            raise SystemExit(code)
-        elif args.command == 'check':
-            check_image(json.loads(Path(args.state).read_text()))
-        else:
-            from controller import run
-            record = json.loads(Path(args.state).read_text())
-            outcome = run(record, args.task, args.artifacts, args.base_url,
-                          args.model, args.steps, args.timeout, text_actions=args.text_actions)
-            raise SystemExit(outcome)
-
+        run_command(args)
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         parser.exit(exc.returncode if isinstance(exc, subprocess.CalledProcessError) else 1, f'{exc}\n')
+
+
+def run_campaign_command(args):
+    import campaign
+    if args.campaign_command == 'create':
+        campaign.create(args.directory, args.state, args.tasks)
+    elif args.campaign_command == 'replay':
+        print(campaign.replay(args.directory, args.run, Path(args.reproducer).read_text(), args.timeout))
+    elif args.campaign_command == 'finding':
+        print(campaign.record_finding(args.directory, json.loads(Path(args.finding).read_text())))
+    else:
+        reason = campaign.resume(args.directory, args.max_runs, args.timeout, args.steps,
+                                 args.base_url, args.model, args.text_actions, max_attempts=args.max_attempts)
+        print(f'Campaign stopped: {reason}')
+        raise SystemExit(0 if reason == 'all_completed' else 1)
+
+
+def run_verify_command(args):
+    from execution import verify
+    from controller import transfer
+    record = json.loads(Path(args.state).read_text())
+    candidate = None
+    if args.candidate:
+        candidate = transfer.validate(json.loads(Path(args.candidate).read_text()))
+    code, output = verify(record, candidate)
+    print(output)
+    raise SystemExit(code)
+
+
+def run_controller_command(args):
+    from controller import run
+    record = json.loads(Path(args.state).read_text())
+    outcome = run(record, args.task, args.artifacts, args.base_url,
+                  args.model, args.steps, args.timeout, text_actions=args.text_actions)
+    raise SystemExit(outcome)
+
+
+def run_command(args):
+    if args.command == 'campaign':
+        run_campaign_command(args)
+    elif args.command == 'build':
+        build(args.profile, args.ca)
+    elif args.command == 'prepare':
+        prepare(args.manifest, args.state, args.ca)
+    elif args.command == 'verify':
+        run_verify_command(args)
+    elif args.command == 'check':
+        check_image(json.loads(Path(args.state).read_text()))
+    else:
+        run_controller_command(args)
 
 
 if __name__ == '__main__':

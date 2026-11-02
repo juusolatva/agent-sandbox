@@ -11,7 +11,6 @@ Hybrid Resilient Sandboxed Agent Loop for LM Studio.
 import itertools
 import json
 import os
-import re
 import selectors
 import signal
 import subprocess
@@ -88,8 +87,19 @@ TOOLS = [
     },
 ]
 
-BASH_TAG_RE = re.compile(r"<bash>\s*(.*?)\s*</bash>", re.DOTALL | re.IGNORECASE)
-DONE_TAG_RE = re.compile(r"<done>\s*(.*?)\s*</done>", re.DOTALL | re.IGNORECASE)
+def text_action_body(text: str, tag: str):
+    """Return the body of a reply that is exactly one <tag>...</tag> pair, else None.
+
+    Plain prefix/suffix checks stay linear on degenerate model output; a
+    backtracking regex with whitespace-overlapping groups can stall the controller.
+    """
+    opening, closing = f"<{tag}>", f"</{tag}>"
+    lowered = text.lower()
+    if len(text) < len(opening) + len(closing):
+        return None
+    if not (lowered.startswith(opening) and lowered.endswith(closing)):
+        return None
+    return text[len(opening):-len(closing)]
 
 
 def get_active_model(client: OpenAI) -> str:
@@ -189,6 +199,15 @@ def trim_history(messages: list[dict]) -> list[dict]:
     return head + tail
 
 
+def assistant_text(message: dict) -> str:
+    """Render an assistant turn, including native tool calls, as plain text."""
+    parts = [message["content"]] if message.get("content") else []
+    for tc in message.get("tool_calls", []):
+        fn = tc.get("function", {})
+        parts.append(f"Called {fn.get('name')}({fn.get('arguments')})")
+    return "\n".join(parts) or "OK"
+
+
 def flatten_messages_for_fallback(messages: list[dict]) -> list[dict]:
     """Convert tool-call history into strictly alternating user/assistant messages for tool-free fallback."""
     flat: list[dict] = []
@@ -204,13 +223,7 @@ def flatten_messages_for_fallback(messages: list[dict]) -> list[dict]:
         if role in {"system", "user"}:
             append_merged(role, m.get("content") or "")
         elif role == "assistant":
-            parts = []
-            if m.get("content"):
-                parts.append(m["content"])
-            for tc in m.get("tool_calls", []):
-                fn = tc.get("function", {})
-                parts.append(f"Called {fn.get('name')}({fn.get('arguments')})")
-            append_merged("assistant", "\n".join(parts) or "OK")
+            append_merged("assistant", assistant_text(m))
         elif role == "tool":
             append_merged("user", f"Tool output:\n{m.get('content', '')}")
 
@@ -273,6 +286,69 @@ def validate_action(name: str, arguments: str) -> dict:
     return args
 
 
+def dispatch(name: str, args: dict, execute, verify) -> tuple[bool, str]:
+    """Run one validated action; return (accepted completion, model-visible output)."""
+    if name == "run_bash":
+        _, output = execute(args["command"])
+        return False, output
+    passed, output = verify()
+    if passed:
+        print(f"\n[Task Complete]: {args['summary']}")
+    return passed, output
+
+
+def handle_tool_calls(content: str, calls, messages: list[dict], execute, verify) -> bool:
+    """Dispatch native tool calls, appending each result; return True on accepted completion."""
+    messages.append({"role": "assistant", "content": content, "tool_calls": [
+        {"id": c.id, "type": "function", "function": {
+            "name": c.function.name, "arguments": c.function.arguments}} for c in calls]})
+    for call in calls:
+        try:
+            name = call.function.name
+            args = validate_action(name, call.function.arguments)
+            if name == "finish_task" and len(calls) != 1:
+                raise ValueError("finish_task must be the only action in a turn")
+            completed, output = dispatch(name, args, execute, verify)
+            if completed:
+                return True
+        except (ValueError, TypeError) as exc:
+            output = f"Invalid action: {exc}"
+        messages.append({"role": "tool", "tool_call_id": call.id, "content": output})
+    return False
+
+
+def parse_text_action(content: str) -> tuple[str, dict] | None:
+    """Return a validated (name, args) for a reply that is exactly one action tag, else None."""
+    text = content.strip()
+    for tag, name, field in (("bash", "run_bash", "command"), ("done", "finish_task", "summary")):
+        body = text_action_body(text, tag)
+        if body is None:
+            continue
+        value = body.strip()
+        if any(t in value.lower() for t in ("<bash>", "</bash>", "<done>", "</done>")):
+            raise ValueError("Multiple or nested actions are not supported")
+        return name, validate_action(name, json.dumps({field: value}))
+    return None
+
+
+def handle_text_action(content: str, messages: list[dict], execute, verify) -> bool:
+    """Dispatch a text action, appending feedback; return True on accepted completion."""
+    # Only a complete, single tag is an action. Prose, fences and reasoning
+    # are never interpreted as commands or implicit success.
+    messages.append({"role": "assistant", "content": content})
+    output = "Use one explicit run_bash/finish_task call or one <bash>/<done> action."
+    try:
+        action = parse_text_action(content)
+        if action is not None:
+            completed, output = dispatch(*action, execute, verify)
+            if completed:
+                return True
+    except ValueError as exc:
+        output = f"Invalid action: {exc}"
+    messages.append({"role": "user", "content": output})
+    return False
+
+
 def run_agent_loop(client: OpenAI, model: str, task: str, *, execute=None, verify=None, infer=None, steps=None) -> Outcome:
     """Dispatch explicit actions; completion is a verified, explicit outcome."""
     execute = execute or execute_bash
@@ -291,51 +367,11 @@ def run_agent_loop(client: OpenAI, model: str, task: str, *, execute=None, verif
         content = msg.content or ""
         calls = getattr(msg, "tool_calls", None)
         if calls:
-            messages.append({"role": "assistant", "content": content, "tool_calls": [
-                {"id": c.id, "type": "function", "function": {
-                    "name": c.function.name, "arguments": c.function.arguments}} for c in calls]})
-            for call in calls:
-                try:
-                    name = call.function.name
-                    args = validate_action(name, call.function.arguments)
-                    if name == "finish_task":
-                        if len(calls) != 1:
-                            raise ValueError("finish_task must be the only action in a turn")
-                        passed, output = verify()
-                        if passed:
-                            print(f"\n[Task Complete]: {args['summary']}")
-                            return Outcome.COMPLETED
-                    else:
-                        _, output = execute(args["command"])
-                except (ValueError, TypeError) as exc:
-                    output = f"Invalid action: {exc}"
-                messages.append({"role": "tool", "tool_call_id": call.id, "content": output})
-            continue
-        # Only a complete, single tag is an action. Prose, fences and reasoning
-        # are never interpreted as commands or implicit success.
-        messages.append({"role": "assistant", "content": content})
-        bash = BASH_TAG_RE.fullmatch(content.strip())
-        done = DONE_TAG_RE.fullmatch(content.strip())
-        output = "Use one explicit run_bash/finish_task call or one <bash>/<done> action."
-        try:
-            if bash or done:
-                match = bash or done
-                name = "run_bash" if bash else "finish_task"
-                field = "command" if bash else "summary"
-                value = match.group(1).strip()
-                if any(tag in value.lower() for tag in ("<bash>", "</bash>", "<done>", "</done>")):
-                    raise ValueError("Multiple or nested actions are not supported")
-                args = validate_action(name, json.dumps({field: value}))
-                if bash:
-                    _, output = execute(args[field])
-                else:
-                    passed, output = verify()
-                    if passed:
-                        print(f"\n[Task Complete]: {value}")
-                        return Outcome.COMPLETED
-        except ValueError as exc:
-            output = f"Invalid action: {exc}"
-        messages.append({"role": "user", "content": output})
+            completed = handle_tool_calls(content, calls, messages, execute, verify)
+        else:
+            completed = handle_text_action(content, messages, execute, verify)
+        if completed:
+            return Outcome.COMPLETED
     print(f"[!] Reached maximum iterations ({limit}).")
     return Outcome.EXHAUSTED
 
@@ -349,38 +385,44 @@ def main() -> int:
     print(f"[*] Using model: {model}")
 
     if len(sys.argv) > 1:
-        task = " ".join(sys.argv[1:])
-        cycle = 0
-        while True:
-            cycle += 1
-            if CONTINUOUS:
-                print(f"\n================ CONTINUOUS CYCLE #{cycle} ================")
-            try:
-                outcome = run_agent_loop(client, model, task)
-            except Exception as exc:
-                print(f"\n[!] Unexpected error in task loop (recovered): {exc}", file=sys.stderr)
-                outcome = Outcome.FAILED
-            print(f"[*] Run outcome: {outcome.name.lower()}")
-            if not CONTINUOUS or outcome != Outcome.COMPLETED:
-                return int(outcome)
-            time.sleep(2.0)
+        return run_task_cycles(client, model, " ".join(sys.argv[1:]))
+    run_interactive(client, model)
+    return 0
 
+
+def run_recovered(client: OpenAI, model: str, task: str) -> Outcome:
+    """Run one task, reporting unexpected harness errors as a failed outcome."""
+    try:
+        return run_agent_loop(client, model, task)
+    except Exception as exc:
+        print(f"\n[!] Unexpected error in task loop (recovered): {exc}", file=sys.stderr)
+        return Outcome.FAILED
+
+
+def run_task_cycles(client: OpenAI, model: str, task: str) -> int:
+    """Run a task once, or repeatedly in continuous mode until it stops completing."""
+    for cycle in itertools.count(1):
+        if CONTINUOUS:
+            print(f"\n================ CONTINUOUS CYCLE #{cycle} ================")
+        outcome = run_recovered(client, model, task)
+        print(f"[*] Run outcome: {outcome.name.lower()}")
+        if not CONTINUOUS or outcome != Outcome.COMPLETED:
+            return int(outcome)
+        time.sleep(2.0)
+
+
+def run_interactive(client: OpenAI, model: str) -> None:
+    """Prompt for tasks until EOF or an explicit exit."""
     while True:
         try:
             task = input("\nEnter task for sandboxed agent (or 'exit' to quit): ").strip()
         except EOFError:
             print("\nExiting.")
-            break
-        if not task:
-            continue
+            return
         if task.lower() in {"exit", "quit"}:
-            break
-        try:
-            run_agent_loop(client, model, task)
-        except Exception as exc:
-            print(f"\n[!] Unexpected error in task loop (recovered): {exc}", file=sys.stderr)
-
-    return 0
+            return
+        if task:
+            run_recovered(client, model, task)
 
 
 def interrupt(signum, frame):

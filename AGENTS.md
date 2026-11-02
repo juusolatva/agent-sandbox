@@ -252,3 +252,37 @@ Additional Stage 3 validation:
 - Added persistent per-task attempt limits (default three) to bound repeated unsuccessful investigations across resumes.
 - Validation: 37 tests discovered, 31 passed and 6 opt-in Docker tests skipped. New tests cover separate replay workers, retained results, recorded-run selection, and retry limits. Actual Docker replay and live inference were not run in this update.
 - Replay status records an exit-code comparison, not independent confirmation of a bug. Automated target selection, finding extraction, coverage tracking, repeated-command detection, and reproducer minimization remain outstanding.
+
+### 2026-11-02 — SonarQube Cloud triage and first fixes
+
+- Triaged all 44 open SonarQube Cloud issues on `a82b01a` (no hotspots; gate
+  failing on new-code security rating C). 3 real, 20 judged false positives
+  (operator-only CLI path rules S8707/S2083, intentional absolute verifier
+  import, dependency-free Rust fixture), 2 design decisions (LAN HTTP fallback),
+  19 optional maintainability items. Sonar statuses not changed yet.
+- Fixed text-action parsing: the `<bash>`/`<done>` regexes backtracked
+  super-linearly on unterminated whitespace (over 60 s for ~8 KB in-process,
+  outside any inference timeout). Replaced with linear prefix/suffix checks;
+  added regression tests that hung before the fix.
+- Moved test bundle construction outside `assertRaises`; added
+  `--only-binary :all:` to the image's pip install (confirmed wheels exist for
+  Python 3.13 and 3.14).
+- Validation: 39 tests discovered, 33 passed, 6 Docker tests skipped. Images
+  were not rebuilt.
+- Follow-up: addressed the remaining 18 confirmed maintainability issues.
+  Split agent dispatch/main, controller run, transfer export, sandbox manifest
+  validation/CLI dispatch, and campaign resume/finding validation into helpers
+  (behavior preserved; export still checks size before reading). Added
+  constants/helpers for duplicated literals and a shared campaign lock helper.
+  Sorted Dockerfile packages and merged the base-stage RUN steps.
+- Validation: 39 unit tests (33 passed, 6 skipped); complexipy reports every
+  function in the edited files at cognitive complexity 15 or below. Rebuilt and
+  prepared the python313 profile; 5 Docker integration tests passed with
+  SANDBOX_DOCKER_TESTS=1 (C++ sanitizer test skipped). Other profiles were not
+  rebuilt. Sonar results will be confirmed on the next analysis.
+- Set runtime minimums: Python 3.13 (`pyproject.toml` `requires-python`, a
+  `sandbox.py` startup check, CI matrix now 3.13/3.14) and Node.js 24.22.1
+  (`engines` in the Node fixture). README and STAGE3 document both. Images were
+  already pinned to Python 3.13.18/3.14.10 and Node 24.22.1. Validation: 41
+  tests (35 passed, 6 skipped); the 3.12 rejection is covered by a mocked test,
+  as no 3.12 interpreter is installed. Node fixture was not re-prepared.

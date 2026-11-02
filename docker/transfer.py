@@ -38,28 +38,44 @@ def validate(bundle):
     return bundle
 
 
+def skipped(name):
+    return name in SKIP or name.startswith('.env')
+
+
+def walk_directories(directory, dirs):
+    """Prune skipped directories in place and reject directory symlinks."""
+    dirs[:] = sorted(d for d in dirs if not skipped(d))
+    if any((Path(directory) / name).is_symlink() for name in dirs):
+        raise ValueError('Directory symlinks are not supported in Stage 3')
+
+
+def read_regular(path, budget):
+    """Read a regular, non-symlink file within budget bytes, rejecting concurrent changes."""
+    if path.is_symlink() or not path.is_file():
+        raise ValueError('Only regular source files are supported in Stage 3')
+    size = path.stat().st_size
+    if size > budget:
+        raise ValueError('Source export exceeds limit')
+    with path.open('rb') as stream:
+        content = stream.read(LIMIT + 1)
+    if len(content) != size:
+        raise ValueError('File changed during export')
+    return content
+
+
 def export(root=ROOT):
     bundle = {}
     total = 0
     for directory, dirs, files in os.walk(root, followlinks=False):
-        dirs[:] = sorted(d for d in dirs if d not in SKIP and not d.startswith('.env'))
-        for name in dirs:
-            if (Path(directory) / name).is_symlink():
-                raise ValueError('Directory symlinks are not supported in Stage 3')
+        walk_directories(directory, dirs)
         for name in sorted(files):
-            if name in SKIP or name.startswith('.env'):
+            if skipped(name):
                 continue
             path = Path(directory) / name
-            if path.is_symlink() or not path.is_file():
-                raise ValueError('Only regular source files are supported in Stage 3')
-            size = path.stat().st_size
-            total += size
-            if total > LIMIT or len(bundle) >= MAX_FILES:
+            if len(bundle) >= MAX_FILES:
                 raise ValueError('Source export exceeds limit')
-            with path.open('rb') as stream:
-                content = stream.read(LIMIT + 1)
-            if len(content) != size:
-                raise ValueError('File changed during export')
+            content = read_regular(path, LIMIT - total)
+            total += len(content)
             bundle[path.relative_to(root).as_posix()] = {
                 'data': base64.b64encode(content).decode(),
                 'executable': bool(path.stat().st_mode & 0o111)}

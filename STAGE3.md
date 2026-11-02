@@ -4,7 +4,8 @@ Stage 3 changes `sandbox.py run` to a trusted host controller. It makes inferenc
 requests itself and dispatches validated actions through fixed Docker operations.
 Model-generated shell commands run only in worker containers with no networking,
 no host credentials or Docker socket, a read-only root filesystem, and CPU,
-memory, PID, and command limits. The host needs the pinned OpenAI SDK:
+memory, PID, and command limits. The host needs Python 3.13 or newer and the
+pinned OpenAI SDK:
 
 ```bash
 python3 -m venv .venv
