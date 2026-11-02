@@ -25,6 +25,12 @@ Implemented (Stages 1–4):
 
 Partially implemented:
 
+- Condensed history record (2026-11-02): steps trimmed out of the prompt window are
+  summarized by the harness into a bounded list of commands, exit statuses and
+  first/last output lines, shown with the task each turn (`MAX_SUMMARY_CHARS`).
+  It records actions and results only, not the model's hypotheses, and is not saved
+  to run artifacts.
+
 - Compose hardening and legacy-agent cleanup (2026-11-02): `LM_STUDIO_HOST` is now
   required (see `.env.example`), `agent.py` requires `LLM_MODEL`, the proxy is
   pinned to `alpine/socat:1.8.1.1` by digest, and both Compose services have
@@ -43,8 +49,8 @@ Partially implemented:
 
 Open:
 
-- Compact investigation summary outside the transcript (history trimming just drops
-  old messages; the token budget is an estimate, not a tokenizer count).
+- Model-written or persisted investigation summaries (the harness-built record below
+  is deterministic and lives only in memory; the token budget is still an estimate).
 - Remaining analysis tools: govulncheck and cargo-audit with offline databases,
   cargo-fuzz, and fuzzing for Python and Node.
 - Restricted HTTP inference gateway and comprehensive network probes.
