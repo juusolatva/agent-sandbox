@@ -197,6 +197,20 @@ Run the regression checks without installing an SDK or starting LM Studio:
 python3 -m unittest discover -s tests -v
 ```
 
+The SonarQube workflow (`.github/workflows/sonarqube.yml`) builds and prepares
+the `python313` profile, runs the full suite including Docker boundary tests
+under `coverage`, and uploads `coverage.xml` to SonarQube Cloud. To reproduce
+the coverage report locally (coverage settings live in `pyproject.toml`):
+
+```bash
+python3 -m pip install --only-binary :all: coverage==7.16.2
+python3 sandbox.py build python313
+python3 sandbox.py prepare examples/python313.json --state artifacts/python313.json
+SANDBOX_DOCKER_TESTS=1 SANDBOX_TEST_PROFILE=python313 python3 -m coverage run -m unittest discover -s tests
+python3 -m coverage xml
+python3 -m coverage report
+```
+
 Completion now requires a valid `finish_task` call or a single `<done>` action.
 Text fallback commands must be a single `<bash>` action. Invalid tool arguments
 are returned to the model as errors. Reasoning content and fenced examples are

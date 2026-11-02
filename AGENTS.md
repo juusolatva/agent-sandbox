@@ -338,3 +338,31 @@ Additional Stage 3 validation:
   finding index that review() expects. Moved controller run callbacks into
   RunSession to clear the remaining S3776 issue. Validation: 51 tests (43
   passed, 8 skipped); 7 python313 Docker integration tests passed.
+
+### 2026-11-02 — SonarQube CI analysis with coverage
+
+- Automatic analysis was disabled in SonarQube Cloud by the user; SONAR_TOKEN
+  is configured for Actions and Dependabot.
+- Added `.github/workflows/sonarqube.yml`: builds and prepares python313, runs
+  the full suite including Docker boundary tests under coverage.py 7.16.2, and
+  scans with sonarqube-scan-action v8.3.0 (pinned SHA; v8.4.0 was under two
+  weeks old). The token is passed only to the scan step; checkout does not
+  persist credentials; fork PRs without the secret skip the scan.
+- Added `sonar-project.properties` (tests indexed separately, examples excluded
+  from coverage, Python 3.13/3.14) and coverage settings in `pyproject.toml`
+  with relative paths.
+- Validation: local coverage run, 51 tests passed (1 skipped), 76% combined
+  line/branch coverage; actionlint passed for all workflows. The hosted
+  workflow and scan run on the PR.
+- Added `.github/workflows/osv-scanner.yml` from the user's template: OSV-Scanner
+  reusable workflows v2.7.0 (SHA verified against the annotated tag, released
+  2026-10-12) for PRs/merge groups and push/schedule/manual runs, scanning
+  `requirements-controller.txt` as a requirements lockfile plus a recursive
+  walk. Local osv-scanner run found go.mod and the controller pins with no
+  known vulnerabilities; actionlint passed.
+- Applied Greptile's README fix: the local coverage recipe now installs the
+  pinned coverage version and writes coverage.xml.
+- First hosted OSV run scanned both manifests but failed uploading SARIF:
+  code scanning is not enabled on this private repository (requires GitHub
+  Code Security). SARIF upload is now gated on the `OSV_UPLOAD_SARIF`
+  repository variable (off by default); scans still fail on vulnerabilities.
