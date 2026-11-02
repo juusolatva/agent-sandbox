@@ -460,3 +460,28 @@ Additional Stage 3 validation:
   libFuzzer (cpp) and `go test -fuzz` found planted crashes with networking
   disabled. govulncheck, cargo-audit and cargo-fuzz are deferred. cpp and rust
   images were not rebuilt. 87 tests (79 passed, 8 skipped).
+
+### 2026-11-02 — Condensed record of trimmed history
+
+- `agent.py` now builds a deterministic, bounded record (command, exit status, first
+  and last output lines) of messages that leave the history window and appends it to
+  the task message in each prompt view; the stored transcript and original task are
+  unchanged. Window budget reserves space for it. `MAX_SUMMARY_CHARS` (default 3000,
+  `0` disables) is wired through Compose, `.env.example` and README. The cap covers the
+  whole record including header and omission note, and unfinished text-action pairs
+  carry across trims (PR #10 review).
+- Chosen over a model-written summary because it needs no extra inference, cannot be
+  steered by the model into dropping evidence, and is testable offline. It loses the
+  model's reasoning and hypotheses; excerpts are labelled untrusted program output.
+- Validation: 8 new tests in `tests/test_agent.py`; full suite 95 tests passed with
+  `SANDBOX_DOCKER_TESTS=1`; Compose config validates. The record is not yet
+  persisted in run artifacts.
+- Live check (Gemma 4 12B, python313 fixture, `MAX_HISTORY_MESSAGES=6`, 14 steps):
+  captured prompts confirm the record reaches the model (7 entries by step 11, task
+  intact). One run with the record and one control with `MAX_SUMMARY_CHARS=0` both
+  ended with "Repeated identical command and result reached the stall limit" and
+  neither wrote evidence.txt. With the record the model still re-ran `cat
+  calculator.py` and `ls -F` that were listed in it. Two runs on a two-file fixture
+  show no measurable benefit; effect on longer investigations of real projects is
+  unmeasured. Runs: `artifacts/runs/80e5b28287ae472ab0b3a9c52a2f3616` (record) and
+  `77fc9e22a8774675a22a48567735ef5d` (control).

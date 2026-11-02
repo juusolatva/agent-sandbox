@@ -169,6 +169,106 @@ class AgentTests(unittest.TestCase):
         with patch.object(agent, 'MAX_HISTORY_MESSAGES', 0), patch.object(agent, 'MAX_CONTEXT_TOKENS', 0):
             self.assertEqual(agent.trim_history(history), history)
 
+    def exchange(self, index, command, output, call_id=None):
+        call_id = call_id or f'c{index}'
+        call = {'id': call_id, 'function': {'name': 'run_bash', 'arguments': json.dumps({'command': command})}}
+        return [{'role': 'assistant', 'content': 'thinking', 'tool_calls': [call]},
+                {'role': 'tool', 'tool_call_id': call_id, 'content': output}]
+
+    def test_digest_records_command_status_and_output_excerpts(self):
+        dropped = self.exchange(1, 'make test', 'Exit code: 2\nfoo.c:3: error: boom\nmiddle\nmake: *** [all] Error 2')
+        dropped += [{'role': 'assistant', 'content': '<bash>ls</bash>'},
+                    {'role': 'user', 'content': 'Exit code: 0\na.txt'}]
+        dropped += self.exchange(2, 'x' * 500, 'Exit code: 0\n(no output)')
+        lines = agent.digest_messages(dropped)
+        self.assertEqual(lines[0], '$ make test => Exit code: 2; foo.c:3: error: boom; ... make: *** [all] Error 2')
+        self.assertEqual(lines[1], '$ ls => Exit code: 0; a.txt')
+        self.assertLess(len(lines[2]), 300)
+        self.assertNotIn('thinking', ''.join(lines))
+
+    def test_digest_ignores_invalid_actions_and_unmatched_results(self):
+        bad = {'id': 'b', 'function': {'name': 'rm_rf', 'arguments': '{}'}}
+        dropped = [{'role': 'tool', 'tool_call_id': 'orphan', 'content': 'stray'},
+                   {'role': 'assistant', 'content': '', 'tool_calls': [bad]},
+                   {'role': 'tool', 'tool_call_id': 'other', 'content': 'unmatched'},
+                   {'role': 'tool', 'tool_call_id': 'b', 'content': 'Invalid action: Unknown tool: rm_rf'},
+                   {'role': 'assistant', 'content': 'just prose'}, {'role': 'user', 'content': 'Use one explicit'}]
+        self.assertEqual(agent.digest_messages(dropped), ['invalid rm_rf call => Invalid action: Unknown tool: rm_rf'])
+
+    def test_notes_are_bounded_and_report_omissions(self):
+        notes = agent.HistoryNotes()
+        with patch.object(agent, 'MAX_SUMMARY_CHARS', 450), patch.object(agent, 'MAX_NOTES', 5):
+            notes.add([f'$ cmd{i} => Exit code: 0' for i in range(8)])
+            text = notes.render()
+        self.assertLessEqual(len(text), 450)  # header and omission note count against the cap
+        self.assertIn('[3 older actions omitted]', text)
+        self.assertIn('cmd7', text)
+        self.assertNotIn('cmd0', text)
+        with patch.object(agent, 'MAX_SUMMARY_CHARS', 0):
+            self.assertEqual(notes.render(), '')
+        with patch.object(agent, 'MAX_SUMMARY_CHARS', 100):  # too small to hold even the header
+            self.assertEqual(notes.render(), '')
+
+    def test_text_action_split_across_trims_is_still_recorded(self):
+        notes = agent.HistoryNotes()
+        notes.add_dropped([{'role': 'assistant', 'content': '<bash>make</bash>'}])
+        self.assertEqual(notes.lines, [])
+        notes.add_dropped([{'role': 'user', 'content': 'Exit code: 1\nerror: boom'}])
+        self.assertEqual(notes.lines, ['$ make => Exit code: 1; error: boom'])
+
+    def test_full_record_fits_reserved_budget(self):
+        notes = agent.HistoryNotes()
+        notes.add([f'$ {"c" * 150} {i} => Exit code: 0; ' + 'o' * 60 for i in range(100)])
+        with patch.object(agent, 'MAX_SUMMARY_CHARS', 1000):
+            record = notes.render()
+            view = agent.with_notes([{'role': 'system', 'content': ''}, {'role': 'user', 'content': ''}], notes)
+        self.assertLessEqual(len(record), 1000)
+        self.assertLessEqual(len(view[1]['content']), 1000 + 2)
+
+    def test_prompt_view_keeps_original_task_and_adds_record(self):
+        notes = agent.HistoryNotes()
+        history = [{'role': 'system', 'content': 's'}, {'role': 'user', 'content': 'task'}]
+        self.assertIs(agent.with_notes(history, notes), history)
+        notes.add(['$ ls => Exit code: 0'])
+        view = agent.with_notes(history, notes)
+        self.assertTrue(view[1]['content'].startswith('task\n\n'))
+        self.assertIn('$ ls => Exit code: 0', view[1]['content'])
+        self.assertEqual(history[1]['content'], 'task')
+
+    def test_loop_condenses_trimmed_steps_into_later_prompts(self):
+        seen = []
+
+        def infer(client, model, messages):
+            seen.append(messages)
+            index = len(seen)
+            action = message('', json.dumps({'command': f'cmd{index}'}))
+            action.tool_calls[0].id = f'c{index}'
+            return action, False
+
+        with patch.object(agent, 'MAX_HISTORY_MESSAGES', 4), patch.object(agent, 'MAX_CONTEXT_TOKENS', 0), \
+             contextlib.redirect_stdout(io.StringIO()):
+            outcome = agent.run_agent_loop(None, 'fake', 'Investigate', infer=infer, steps=6,
+                                           execute=lambda command: (0, f'Exit code: 0\n{command} result'),
+                                           verify=lambda: (False, ''))
+        self.assertEqual(outcome, agent.Outcome.EXHAUSTED)
+        self.assertNotIn('Condensed record', seen[1][1]['content'])
+        last = seen[-1]
+        self.assertIn('$ cmd1 => Exit code: 0; cmd1 result', last[1]['content'])
+        self.assertIn('$ cmd2 => ', last[1]['content'])
+        self.assertNotIn('cmd5', last[1]['content'])  # still inside the window
+        self.assertLessEqual(len(last) - 2, 4)
+        # Condensed text never accumulates in the stored transcript or repeats.
+        self.assertEqual(last[1]['content'].count('$ cmd1 =>'), 1)
+
+    def test_summary_reserve_shrinks_window_budget(self):
+        history = [{'role': 'system', 'content': 's'}, {'role': 'user', 'content': 't'}]
+        for index in range(6):
+            history += self.exchange(index, 'ls', 'Exit code: 0\n' + 'x' * 600)
+        with patch.object(agent, 'MAX_HISTORY_MESSAGES', 100), patch.object(agent, 'MAX_CONTEXT_TOKENS', 1500):
+            plain = agent.split_history(history)[0]
+            reserved = agent.split_history(history, 600)[0]
+        self.assertLess(len(reserved), len(plain))
+
 
 if __name__ == '__main__':
     unittest.main()

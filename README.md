@@ -155,7 +155,7 @@ MAX_ITERATIONS=0 VERIFY_CMD="./run_tests.sh" docker compose run --rm sandbox \
   "Fix all bugs in app.py until ./run_tests.sh passes"
 ```
 
-> **Context Window Protection:** To reduce history growth, `agent.py` automatically trims the message history using a sliding window (`MAX_HISTORY_MESSAGES=24`) and an estimated token budget (`MAX_CONTEXT_TOKENS=12000`, about 3 characters per token), preserving the system prompt, original task, and recent complete exchanges. The estimate is approximate and does not count the tool schema, and the newest message is always kept, so set the budget below your model's loaded context length with margin.
+> **Context Window Protection:** To reduce history growth, `agent.py` automatically trims the message history using a sliding window (`MAX_HISTORY_MESSAGES=24`) and an estimated token budget (`MAX_CONTEXT_TOKENS=12000`, about 3 characters per token), preserving the system prompt, original task, and recent complete exchanges. Steps that leave the window are condensed by the harness (not the model) into a bounded record of each command, its exit status and first/last output lines (`MAX_SUMMARY_CHARS=3000`, `0` disables), which is shown with the task on every later turn; excerpts are marked as untrusted program output, and older entries are dropped with a count once the record is full. The estimate is approximate and does not count the tool schema, and the newest message is always kept, so set the budget below your model's loaded context length with margin.
 
 ### Mode B: Continuous Autonomous Loop (`CONTINUOUS=1`)
 If you want the agent to run **forever** in a loop—restarting with a fresh context window after each completed cycle (useful for fuzzing, continuous code improvement, generating synthetic data, or polling a task queue in `./workspace`)—set `CONTINUOUS=1`:
@@ -191,6 +191,7 @@ All settings can be passed on the command line or configured in a `.env` file ne
 | `MAX_ITERATIONS` | `20` | Maximum steps per task (`0` = infinite steps) |
 | `MAX_HISTORY_MESSAGES` | `24` | Sliding window size in messages (`0` disables) |
 | `MAX_CONTEXT_TOKENS` | `12000` | Estimated prompt-token budget for retained history (`0` disables) |
+| `MAX_SUMMARY_CHARS` | `3000` | Cap on the condensed record of trimmed-away steps (`0` disables) |
 | `COMMAND_TIMEOUT` | `30` | Maximum seconds a single bash command can run before being killed |
 | `VERIFY_CMD` | *(empty)* | Optional bash command that must exit `0` before the agent is allowed to finish |
 | `CONTINUOUS` | `0` | Set to `1` to restart the task in an infinite cycle (`while True`) |
