@@ -30,7 +30,10 @@ Partially implemented:
   pinned to `alpine/socat:1.8.1.1` by digest, and both Compose services have
   `read_only`, dropped capabilities and `init`. Fixed container names are gone.
   The socat proxy still forwards arbitrary TCP (see the HTTP gateway item below).
-- Of the section 2 analysis tools, only clang-tidy is installed.
+- Analysis tools (2026-11-02): clang-tidy, Staticcheck, Ruff, Hypothesis and ESLint
+  are installed and pinned; libFuzzer and Go native fuzzing were confirmed offline.
+  govulncheck, cargo-audit and cargo-fuzz are not installed (their databases need
+  their own offline mirrors; see STAGE2.md).
 
 - Offline dependency advisory snapshots (2026-11-02): `sandbox.py advisories fetch`
   stores dated, hash-verified OSV databases for Go, PyPI, crates.io and npm;
@@ -42,8 +45,8 @@ Open:
 
 - Compact investigation summary outside the transcript (history trimming just drops
   old messages; the token budget is an estimate, not a tokenizer count).
-- Additional analysis tools: Staticcheck, govulncheck, cargo-audit, Ruff,
-  Hypothesis, ESLint, and coverage-guided fuzzing.
+- Remaining analysis tools: govulncheck and cargo-audit with offline databases,
+  cargo-fuzz, and fuzzing for Python and Node.
 - Restricted HTTP inference gateway and comprehensive network probes.
 - Storage quotas.
 - Optional Stage 4 extensions: automatic reproducer minimization,

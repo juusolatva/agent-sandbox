@@ -121,6 +121,26 @@ fixtures with networking disabled on 2026-11-01. Python fixtures installed pytes
 checks included AddressSanitizer/UndefinedBehaviorSanitizer; Rust tests included
 Clippy. Hosted CI and live LM Studio integration have not been exercised.
 
+## Analysis tools in the images
+
+Installed at image build time (pinned, no network needed to run) and probed by
+`sandbox.py build`:
+
+| Profile | Tools |
+| --- | --- |
+| `cpp` | clang-tidy 14, ASan/UBSan, libFuzzer (`clang++-14 -fsanitize=fuzzer,address`) |
+| `go` | Staticcheck 2026.2.2 (v0.8.2), `go vet`, native fuzzing (`go test -fuzz`) |
+| `rust` | Clippy, rustfmt |
+| `python313`, `python314` | Ruff 0.17.1, Hypothesis 6.170.1, pytest per project |
+| `node` | ESLint 10.13.0 (flat config: put `eslint.config.js` in the project) |
+
+Offline checks: libFuzzer found a planted crash in the cpp image and `go test -fuzz`
+found one in the Go image with `--network none`. Not installed: govulncheck and
+cargo-audit (their vulnerability databases are not the OSV archives above, so they
+cannot run offline yet; use `advisories scan`), cargo-fuzz (needs nightly Rust),
+and Python/Node fuzzers. These tools run only when a manifest `check` or the model
+invokes them; none changes the default baselines.
+
 ## Offline dependency advisory checks
 
 Advisory data is prepared while networked and consumed offline. Both commands run

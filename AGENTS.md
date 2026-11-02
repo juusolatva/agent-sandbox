@@ -453,3 +453,10 @@ Additional Stage 3 validation:
 - Not done: govulncheck, cargo-audit and pip-audit integration, reachability
   analysis, npm scanning against a live npm snapshot (220 MB, not fetched here),
   and feeding reports to the model. Snapshots stay on the host.
+- Same PR: added pinned analysis tools to the images (Staticcheck v0.8.2, Ruff
+  0.17.1, Hypothesis 6.170.1, ESLint 10.13.0; all at least two weeks old) with
+  offline build probes. Rebuilt go, python313, python314 and node; re-prepared the
+  go, node and python313 fixtures (offline checks and protected baselines pass).
+  libFuzzer (cpp) and `go test -fuzz` found planted crashes with networking
+  disabled. govulncheck, cargo-audit and cargo-fuzz are deferred. cpp and rust
+  images were not rebuilt. 87 tests (79 passed, 8 skipped).
