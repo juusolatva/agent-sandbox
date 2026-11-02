@@ -60,7 +60,7 @@ RUN --mount=type=secret,id=proxy_ca \
     if [ -f /run/secrets/proxy_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; \
     ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
     ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx && \
-    npm install --global --no-audit --no-fund eslint@10.13.0 && npm cache clean --force
+    npm install --global --ignore-scripts --no-audit --no-fund eslint@10.13.0 && npm cache clean --force
 USER agent
 
 # Build with PYTHON_IMAGE=python:3.14.10-slim-bookworm for the 3.14 environment.
@@ -68,7 +68,7 @@ FROM base AS python
 USER root
 RUN --mount=type=secret,id=proxy_ca \
     if [ -f /run/secrets/proxy_ca ]; then export PIP_CERT=/run/secrets/proxy_ca; fi && \
-    pip install --no-cache-dir --only-binary :all: ruff==0.17.1 hypothesis==6.170.1
+    pip install --no-cache-dir --only-binary :all: hypothesis==6.170.1 ruff==0.17.1
 USER agent
 
 # Preserve docker compose build's default target.

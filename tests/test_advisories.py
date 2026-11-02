@@ -68,16 +68,18 @@ class AdvisoryTests(unittest.TestCase):
         self.fetch('Go')
         self.fetch('npm')
         self.assertEqual(sorted(advisories.load_metadata(self.snapshot)['databases']), ['Go', 'npm'])
-        with self.assertRaises(ValueError):
-            advisories.fetch(self.snapshot, ('Hackage',), opener({}))
-        with self.assertRaises(ValueError):
-            advisories.fetch(self.snapshot, (), opener({}))
+        unused = opener({})
+        with self.assertRaisesRegex(ValueError, 'Unsupported ecosystems'):
+            advisories.fetch(self.snapshot, ('Hackage',), unused)
+        with self.assertRaisesRegex(ValueError, 'none selected'):
+            advisories.fetch(self.snapshot, (), unused)
 
     def test_corrupt_download_leaves_existing_snapshot_untouched(self):
         self.fetch('Go')
         before = advisories.database_path(self.snapshot, 'Go').read_bytes()
-        with self.assertRaises(Exception):
-            advisories.fetch(self.snapshot, ('Go',), opener({'Go': b'not a zip'}))
+        corrupt = opener({'Go': b'not a zip'})
+        with self.assertRaises(zipfile.BadZipFile):
+            advisories.fetch(self.snapshot, ('Go',), corrupt)
         self.assertEqual(advisories.database_path(self.snapshot, 'Go').read_bytes(), before)
         self.assertEqual(advisories.verify_snapshot(self.snapshot)[2], {})
 

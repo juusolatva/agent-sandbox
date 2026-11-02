@@ -24,7 +24,7 @@ class ImageToolTests(unittest.TestCase):
                 self.assertIn(tool, PROFILES[profile]['probe'], (profile, tool))
 
     def test_python_tools_install_from_wheels(self):
-        self.assertRegex(DOCKERFILE, r'--only-binary :all: ruff==')
+        self.assertRegex(DOCKERFILE, r'--only-binary :all: hypothesis==')
 
 
 if __name__ == '__main__':
