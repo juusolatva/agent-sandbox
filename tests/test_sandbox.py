@@ -2,6 +2,7 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import patch
 
@@ -24,6 +25,10 @@ class PreparationTests(unittest.TestCase):
         package = json.loads((sandbox.ROOT / 'examples/fixtures/node/package.json').read_text())
         self.assertEqual(package['engines']['node'], '>=24.22.1')
         self.assertIn('requires-python = ">=3.13"', (sandbox.ROOT / 'pyproject.toml').read_text())
+        fixtures = sandbox.ROOT / 'examples/fixtures'
+        self.assertIn('\ngo 1.26\n', '\n' + (fixtures / 'go/go.mod').read_text())
+        cargo = tomllib.loads((fixtures / 'rust/Cargo.toml').read_text())
+        self.assertEqual(cargo['package']['rust-version'], '1.88')
 
     def test_manifest_rejects_unknown_fields(self):
         with tempfile.TemporaryDirectory() as directory:

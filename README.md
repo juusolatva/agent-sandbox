@@ -69,8 +69,10 @@ LM Studio's OpenAI server uses a strict internal grammar parser (`peg-native`) w
 
 ### 1. Prerequisites
 Host-side tools (`sandbox.py`, the controller and tests) require Python 3.13 or
-newer. Node.js projects target Node.js 24.22.1 or newer; the bundled Node image
-pins exactly 24.22.1.
+newer. Bundled example projects declare their minimum toolchains: Node.js
+24.22.1 (`engines`), Go 1.26 (`go` directive) and Rust 1.88 (`rust-version`).
+The images pin Node.js 24.22.1, Go 1.27.3 and Rust 1.99.1. Go and Cargo refuse
+older toolchains; npm only warns about `engines` by default.
 
 1. In **LM Studio (Windows)**, load a chat/coding model and enable **Serve on Local Network** on port `1234`.
 2. Build the sandbox image once in WSL2:
