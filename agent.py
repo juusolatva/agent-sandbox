@@ -102,7 +102,7 @@ def text_action_body(text: str, tag: str):
     return text[len(opening):-len(closing)]
 
 
-def get_active_model(client: OpenAI) -> str:
+def get_active_model() -> str:
     """Return the explicitly configured model; never guess one from the server."""
     if MODEL_ENV:
         return MODEL_ENV
@@ -370,7 +370,7 @@ def main() -> int:
     if OpenAI is None:
         raise RuntimeError("Install requirements-controller.txt to use inference")
     client = OpenAI(base_url=BASE_URL, api_key=API_KEY, timeout=LLM_TIMEOUT, max_retries=2)
-    model = get_active_model(client)
+    model = get_active_model()
     print(f"[*] Connected to LM Studio via {BASE_URL}")
     print(f"[*] Using model: {model}")
 

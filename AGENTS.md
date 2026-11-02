@@ -415,3 +415,10 @@ Additional Stage 3 validation:
   the read-only sandbox can write `/tmp` and the workspace but not `/home/agent`
   or `/opt`; the proxy starts read-only. No live inference or full agent run.
   Behavior change: existing setups need a `.env` with `LM_STUDIO_HOST` and `LLM_MODEL`.
+
+- PR #7 review follow-up: removed the unused `client` parameter from
+  `get_active_model` (Sonar S1172); prepared Compose override sets
+  `read_only: false` because the project is baked into the image workspace and
+  edits are discarded at exit; README Quick Start now creates `.env` before
+  `docker compose build`. 64 tests (8 skipped) and the merged Compose config
+  were checked.

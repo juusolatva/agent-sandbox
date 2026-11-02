@@ -75,7 +75,11 @@ The images pin Node.js 24.22.1, Go 1.27.3 and Rust 1.99.1. Go and Cargo refuse
 older toolchains; npm only warns about `engines` by default.
 
 1. In **LM Studio (Windows)**, load a chat/coding model and enable **Serve on Local Network** on port `1234`.
-2. Build the sandbox image once in WSL2:
+2. Create your settings file and set `LM_STUDIO_HOST` and `LLM_MODEL` (both are required):
+   ```bash
+   cp .env.example .env
+   ```
+3. Build the sandbox image once in WSL2:
    ```bash
    docker compose build
    ```
