@@ -1,22 +1,27 @@
 services:
   # Bridge proxy: forwards traffic from the offline sandbox network to LM Studio on Windows
   lm-proxy:
-    image: alpine/socat:latest
-    container_name: lm-studio-proxy
+    # Pinned to a release and digest; update both together after reviewing the new image.
+    image: alpine/socat:1.8.1.1@sha256:7f9a06753033f2b7de18edc2353f2c15153413d95a039163c6db270fc7a6c3b0
     restart: unless-stopped
     command: >
       TCP-LISTEN:1234,fork,reuseaddr
-      TCP:${LM_STUDIO_HOST:-10.0.0.2}:${LM_STUDIO_PORT:-1234}
+      TCP:${LM_STUDIO_HOST:?Set LM_STUDIO_HOST in .env (see .env.example)}:${LM_STUDIO_PORT:-1234}
     networks:
       - sandbox_net
       - host_bridge
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
 
   # Isolated LLM Sandbox: NO internet access, can only reach lm-proxy:1234
   sandbox:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: llm-sandbox
     depends_on:
       - lm-proxy
     environment:
@@ -41,6 +46,10 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    # Read-only root filesystem; only /tmp and the mounted workspace are writable
+    read_only: true
+    tmpfs:
+      - /tmp:exec,mode=1777
     pids_limit: 128
     mem_limit: 2g
     cpus: 2.0

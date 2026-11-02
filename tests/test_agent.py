@@ -127,6 +127,14 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(code, 124)
             self.assertFalse(marker.exists())
 
+    def test_model_must_be_configured_explicitly(self):
+        with patch.object(agent, 'MODEL_ENV', ''), contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as raised:
+                agent.get_active_model()
+        self.assertEqual(raised.exception.code, 1)
+        with patch.object(agent, 'MODEL_ENV', 'chosen/model'):
+            self.assertEqual(agent.get_active_model(), 'chosen/model')
+
 
 if __name__ == '__main__':
     unittest.main()

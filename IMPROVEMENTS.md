@@ -25,13 +25,11 @@ Implemented (Stages 1–4):
 
 Partially implemented:
 
-- LM Studio host is configurable (`LM_STUDIO_HOST`) but still defaults to
-  `10.0.0.2`.
-- The controller requires an explicit model; the legacy `agent.py` still falls back
-  to the first non-embedding model.
-- Python and image dependencies are pinned, but the Compose proxy still uses
-  `alpine/socat:latest`, and the legacy Compose services lack `read_only` and
-  proxy hardening.
+- Compose hardening and legacy-agent cleanup (2026-11-02): `LM_STUDIO_HOST` is now
+  required (see `.env.example`), `agent.py` requires `LLM_MODEL`, the proxy is
+  pinned to `alpine/socat:1.8.1.1` by digest, and both Compose services have
+  `read_only`, dropped capabilities and `init`. Fixed container names are gone.
+  The socat proxy still forwards arbitrary TCP (see the HTTP gateway item below).
 - Of the section 2 analysis tools, only clang-tidy is installed.
 
 Open:
@@ -43,7 +41,6 @@ Open:
 - Offline dependency advisory snapshots.
 - Restricted HTTP inference gateway and comprehensive network probes.
 - Storage quotas.
-- `.env.example` and removal of fixed Compose container names.
 - Optional Stage 4 extensions: automatic reproducer minimization,
   scanner-generated targets, semantic deduplication, and candidate carryover.
 
@@ -266,8 +263,9 @@ finding in the examined scope, not proof that the project has no bugs.
 ### 6. Maintainability and operating improvements
 
 *Status: modules, fake-LLM tests, language fixtures, `.dockerignore`, and
-controller model selection are done; `.env.example`, fixed container names,
-the legacy agent's model fallback, and the history README claim are open.*
+controller model selection are done; `.env.example`, fixed container names
+and the legacy agent's model fallback were addressed 2026-11-02; the history
+README claim is open.*
 
 - Split configuration, LLM transport, action parsing, execution, verification,
   persistence, and CLI behavior into small modules with explicit interfaces.

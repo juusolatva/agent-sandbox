@@ -402,3 +402,23 @@ Additional Stage 3 validation:
   unpinned `alpine/socat:latest`, legacy `agent.py` model fallback, and the README
   context-overflow claim for `MAX_HISTORY_MESSAGES`. Documentation-only; runtime
   tests were not rerun.
+
+### 2026-11-02 — Compose hardening and required model/host
+
+- `docker-compose.yml`: proxy pinned to `alpine/socat:1.8.1.1` with digest (1.8.1.3
+  was two days old), fixed container names removed, `read_only` root filesystems
+  with `/tmp` tmpfs, dropped capabilities and `init` on the proxy. `LM_STUDIO_HOST`
+  is now required (no `10.0.0.2` default); added `.env.example`.
+- `agent.py` no longer auto-selects the first LM Studio model; `LLM_MODEL` is
+  required. README updated; unit test added.
+- Validation: 64 tests (56 passed, 8 skipped); both Compose configs validate;
+  the read-only sandbox can write `/tmp` and the workspace but not `/home/agent`
+  or `/opt`; the proxy starts read-only. No live inference or full agent run.
+  Behavior change: existing setups need a `.env` with `LM_STUDIO_HOST` and `LLM_MODEL`.
+
+- PR #7 review follow-up: removed the unused `client` parameter from
+  `get_active_model` (Sonar S1172); prepared Compose override sets
+  `read_only: false` because the project is baked into the image workspace and
+  edits are discarded at exit; README Quick Start now creates `.env` before
+  `docker compose build`. 64 tests (8 skipped) and the merged Compose config
+  were checked.

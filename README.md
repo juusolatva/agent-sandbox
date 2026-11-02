@@ -75,7 +75,11 @@ The images pin Node.js 24.22.1, Go 1.27.3 and Rust 1.99.1. Go and Cargo refuse
 older toolchains; npm only warns about `engines` by default.
 
 1. In **LM Studio (Windows)**, load a chat/coding model and enable **Serve on Local Network** on port `1234`.
-2. Build the sandbox image once in WSL2:
+2. Create your settings file and set `LM_STUDIO_HOST` and `LLM_MODEL` (both are required):
+   ```bash
+   cp .env.example .env
+   ```
+3. Build the sandbox image once in WSL2:
    ```bash
    docker compose build
    ```
@@ -93,7 +97,7 @@ docker compose run --rm sandbox "Create a Python script that generates the first
 ```
 
 ### 4. Choosing a Specific Model
-By default, `agent.py` uses the first non-embedding model returned by LM Studio. Override it with `LLM_MODEL`:
+`agent.py` requires an explicit model and no longer picks one from LM Studio. Set `LLM_MODEL`:
 ```bash
 LLM_MODEL="qwen/qwen2.5-coder-14b" docker compose run --rm sandbox "Refactor the scripts in this folder"
 ```
@@ -177,13 +181,13 @@ docker stop agent-daemon && docker rm agent-daemon
 
 ## Configuration Reference (Environment Variables)
 
-All settings can be passed on the command line or configured in a `.env` file next to `docker-compose.yml`:
+All settings can be passed on the command line or configured in a `.env` file next to `docker-compose.yml` (copy `.env.example` to start):
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `LM_STUDIO_HOST` | `10.0.0.2` | IP/hostname used by `lm-proxy` to reach LM Studio on Windows |
+| `LM_STUDIO_HOST` | *(required)* | IP/hostname used by `lm-proxy` to reach LM Studio on Windows; `.env.example` uses the tested `10.0.0.2` |
 | `LM_STUDIO_PORT` | `1234` | Port where LM Studio's Local Inference Server is listening |
-| `LLM_MODEL` | *(auto-detect)* | Model ID in LM Studio (e.g., `openai/gpt-oss-20b`, `qwen/qwen2.5-coder-14b`) |
+| `LLM_MODEL` | *(required)* | Model ID in LM Studio (e.g., `openai/gpt-oss-20b`, `qwen/qwen2.5-coder-14b`) |
 | `MAX_ITERATIONS` | `20` | Maximum steps per task (`0` = infinite steps) |
 | `MAX_HISTORY_MESSAGES` | `24` | Sliding window size to prevent overflowing LM Studio's context limit |
 | `COMMAND_TIMEOUT` | `30` | Maximum seconds a single bash command can run before being killed |
