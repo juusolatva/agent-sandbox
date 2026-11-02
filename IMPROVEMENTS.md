@@ -1,33 +1,73 @@
 # Assessment and proposed improvements
 
 Assessed on 2026-11-01 against the initial commit `69e90db`.
-This document preserves the original assessment and its historical code references.
-Implementation progress is recorded in AGENTS.md and STAGE2.md–STAGE4.md. Stages
-1–4 now implement the reliability, prepared-language, protected-execution, and
-bounded-campaign foundations. The broader tool catalog, dependency advisory
-snapshots, token-based context management, inference gateway, comprehensive network
-probes, and storage quotas remain separate follow-on work. Stage 4 adds queued
-selection and progress records, untrusted structured proposals and operator review,
-fresh-worker replay, and stall limits; automatic minimization and scanner-generated
-targets remain extensions.
+The assessment text below is preserved as written. Its present-tense descriptions
+("currently", "today") refer to that commit, and code references such as
+`69e90db:agent.py:320` point into it, not the current tree. Each section starts
+with a status note. Implementation details are in AGENTS.md and STAGE2.md–STAGE4.md.
+
+## Status as of 2026-11-02
+
+Implemented (Stages 1–4):
+
+- Explicit, validated actions and completion; bounded streamed output; process-group
+  cleanup; explicit run outcomes and exit codes; classified inference errors with
+  timeouts and bounded retries.
+- Pinned language images (GCC/Clang, Go, Rust, Python 3.13/3.14, Node.js 24.22.1),
+  operator project manifests, networked dependency preparation, and offline
+  baseline checks.
+- Trusted host controller with fresh offline per-command workers, read-only root
+  filesystems, separate protected verification, and durable run artifacts.
+- Bounded campaigns: persistent target selection, attempt and time budgets, resume,
+  stall and repeated-command detection, fresh-worker replay, untrusted structured
+  proposals, and operator-reviewed findings.
+- Fake-LLM and subprocess regression tests, Docker boundary tests, and CI.
+
+Partially implemented:
+
+- LM Studio host is configurable (`LM_STUDIO_HOST`) but still defaults to
+  `10.0.0.2`.
+- The controller requires an explicit model; the legacy `agent.py` still falls back
+  to the first non-embedding model.
+- Python and image dependencies are pinned, but the Compose proxy still uses
+  `alpine/socat:latest`, and the legacy Compose services lack `read_only` and
+  proxy hardening.
+- Of the section 2 analysis tools, only clang-tidy is installed.
+
+Open:
+
+- Token-based context budgeting (history is still bounded by message count) and
+  the matching README claim at the `MAX_HISTORY_MESSAGES` setting.
+- Additional analysis tools: Staticcheck, govulncheck, cargo-audit, Ruff,
+  Hypothesis, ESLint, and coverage-guided fuzzing.
+- Offline dependency advisory snapshots.
+- Restricted HTTP inference gateway and comprehensive network probes.
+- Storage quotas.
+- `.env.example` and removal of fixed Compose container names.
+- Optional Stage 4 extensions: automatic reproducer minimization,
+  scanner-generated targets, semantic deduplication, and candidate carryover.
+
+## Original assessment
 
 The existing non-root container, capability restrictions, resource limits, and
 separate inference proxy are useful foundations. The largest improvements for
 multi-language bug hunting are reliable execution, reproducible offline project
 environments, independent verification, and persistent investigation state.
 
-## 1. Fix the agent's completion and execution behavior first
+### 1. Fix the agent's completion and execution behavior first
+
+*Status: implemented in Stage 1, except token-based history budgeting.*
 
 | Priority | Evidence in current code | Proposed change |
 | --- | --- | --- |
-| First | `agent.py:320` accepts any nonempty text as completion, even a plan to inspect files. | Require a validated `finish_task` call or explicit completion action. Ordinary prose must not end a run. |
-| First | `agent.py:242` substitutes `reasoning_content` for empty content, then interprets it as executable actions. | Keep reasoning separate from action dispatch. Execute only validated, explicitly emitted actions. |
-| First | `agent.py:100` captures all command output in memory; truncation happens only afterward at line 122. | Stream output through a bounded buffer. Preserve bounded log artifacts separately, including useful head/tail diagnostics. |
-| First | `agent.py:100` times out the direct shell process, allowing child processes to survive. | Start a separate process group/session, terminate the group on timeout, escalate if needed, and reap children. Use a worker cgroup/container boundary for reliable cleanup of detached processes. |
-| First | `agent.py:272` parses JSON but assumes an object and valid field types. | Validate action names, argument objects, required fields, string sizes, and command types. Return a structured tool error on invalid output. |
-| Next | `agent.py:338` and `agent.py:355` do not propagate exhaustion or recovered errors into a failing process exit status. | Return explicit outcomes such as completed, exhausted, interrupted, and infrastructure failure; map them to documented exit codes. |
-| Next | `agent.py:204` treats every exception as a tool-parser failure. | Classify parser errors, network failures, authentication errors, context overflow, and server errors. Set explicit inference timeouts and bounded retries; remember fallback mode for the applicable session. |
-| Next | `agent.py:146` budgets history by message count rather than size. | Budget prompt and response tokens, preserve complete tool exchanges, and maintain a compact investigation summary outside the transcript. |
+| First | `69e90db:agent.py:320` accepts any nonempty text as completion, even a plan to inspect files. | Require a validated `finish_task` call or explicit completion action. Ordinary prose must not end a run. |
+| First | `69e90db:agent.py:242` substitutes `reasoning_content` for empty content, then interprets it as executable actions. | Keep reasoning separate from action dispatch. Execute only validated, explicitly emitted actions. |
+| First | `69e90db:agent.py:100` captures all command output in memory; truncation happens only afterward at line 122. | Stream output through a bounded buffer. Preserve bounded log artifacts separately, including useful head/tail diagnostics. |
+| First | `69e90db:agent.py:100` times out the direct shell process, allowing child processes to survive. | Start a separate process group/session, terminate the group on timeout, escalate if needed, and reap children. Use a worker cgroup/container boundary for reliable cleanup of detached processes. |
+| First | `69e90db:agent.py:272` parses JSON but assumes an object and valid field types. | Validate action names, argument objects, required fields, string sizes, and command types. Return a structured tool error on invalid output. |
+| Next | `69e90db:agent.py:338` and `69e90db:agent.py:355` do not propagate exhaustion or recovered errors into a failing process exit status. | Return explicit outcomes such as completed, exhausted, interrupted, and infrastructure failure; map them to documented exit codes. |
+| Next | `69e90db:agent.py:204` treats every exception as a tool-parser failure. | Classify parser errors, network failures, authentication errors, context overflow, and server errors. Set explicit inference timeouts and bounded retries; remember fallback mode for the applicable session. |
+| Next | `69e90db:agent.py:146` budgets history by message count rather than size. | Budget prompt and response tokens, preserve complete tool exchanges, and maintain a compact investigation summary outside the transcript. |
 
 Do not automatically execute arbitrary fenced shell examples in explanatory
 responses. A structured action envelope is easier to validate. If text fallback
@@ -40,9 +80,12 @@ Make command, build/test, inference, and overall run deadlines separate settings
 The current 30-second command timeout is too restrictive for many builds and fuzz
 campaigns. Add signal handling and an init process for orderly shutdown.
 
-## 2. Provide reproducible language environments
+### 2. Provide reproducible language environments
 
-`Dockerfile:1` currently selects Python 3.12. The image installs GCC and libc
+*Status: language images implemented in Stage 2 (see STAGE2.md); most analysis
+tools in the table are not installed yet.*
+
+`69e90db:Dockerfile:1` currently selects Python 3.12. The image installs GCC and libc
 headers, but does not configure Clang, G++, Go, Rust, the requested Python
 versions, Node.js, or common project build and test tooling.
 
@@ -81,7 +124,10 @@ sanitizers, or substantial C++ builds. Measure a baseline build before choosing
 limits. If GCC/Clang means building the compiler repositories themselves, use a
 separate resource profile with substantially larger build storage and budgets.
 
-## 3. Separate dependency preparation from offline investigation
+### 3. Separate dependency preparation from offline investigation
+
+*Status: preparation and offline baselines implemented in Stage 2; offline
+advisory database snapshots are open.*
 
 Installing compilers alone will not make arbitrary projects build offline.
 Provide a preparation command that resolves locked inputs and creates an
@@ -117,7 +163,11 @@ the check during controlled preparation and import the dated result. Record
 database timestamps and report unavailable checks explicitly. Do not turn on
 general sandbox internet access to make an audit command pass.
 
-## 4. Isolate the controller and verifier from project execution
+### 4. Isolate the controller and verifier from project execution
+
+*Status: controller, offline workers, and protected verification implemented in
+Stage 3 (see STAGE3.md); the inference gateway, network probes, and legacy
+Compose hardening are open.*
 
 Today the model's shell, agent process, and verification command share a user
 and container. The read-only `agent.py` mount protects that file, but does not
@@ -170,7 +220,10 @@ host gateway, other containers, LAN and internet routes, DNS, IPv6, and allowed
 inference endpoints. Make the LM Studio host configurable and document tested
 networking modes instead of assuming `10.0.0.2` is portable.
 
-## 5. Build a persistent investigation loop
+### 5. Build a persistent investigation loop
+
+*Status: implemented as bounded campaigns in Stage 4 (see STAGE4.md);
+minimization and scanner-generated leads are open.*
 
 `CONTINUOUS=1` currently reruns the same prompt with fresh message history,
 including after exhausted or failed cycles. It has no durable target queue,
@@ -210,7 +263,11 @@ Bound wall time, inference usage, commands, retries, output, and disk use. Detec
 repeated commands/results and stalled investigations. A clean cycle means no
 finding in the examined scope, not proof that the project has no bugs.
 
-## 6. Maintainability and operating improvements
+### 6. Maintainability and operating improvements
+
+*Status: modules, fake-LLM tests, language fixtures, `.dockerignore`, and
+controller model selection are done; `.env.example`, fixed container names,
+the legacy agent's model fallback, and the history README claim are open.*
 
 - Split configuration, LLM transport, action parsing, execution, verification,
   persistence, and CLI behavior into small modules with explicit interfaces.
@@ -230,7 +287,7 @@ finding in the examined scope, not proof that the project has no bugs.
 - Update README claims about never crashing, strict timeouts, context overflow
   protection, and network isolation to match tested behavior.
 
-## Suggested implementation order
+### Suggested implementation order
 
 1. Correct action parsing, completion outcomes, process cleanup, and bounded
    output; add fake-LLM regression checks and CI.
@@ -240,7 +297,7 @@ finding in the examined scope, not proof that the project has no bugs.
 4. Add persistent target queues, structured findings, reproducers, resume, and
    no-progress limits; then enable unattended continuous campaigns.
 
-## Validation performed
+### Validation performed
 
 - `docker compose config --quiet` passed using Docker Compose v5.6.1.
 - Four isolated checks against the current agent confirmed that ordinary prose

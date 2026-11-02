@@ -390,3 +390,15 @@ Additional Stage 3 validation:
   exit code made them fail.
 - Validation: 63 tests passed (1 skipped) with python313 Docker tests; local
   coverage sandbox.py 46% -> 84%, total 76% -> 83%.
+
+### 2026-11-02 — IMPROVEMENTS.md status refresh
+
+- Reviewed IMPROVEMENTS.md against the current tree. Kept the original assessment
+  text, nested it under "Original assessment", and added a dated status summary
+  (implemented / partially implemented / open) plus a status note per section.
+- Pinned historical code references to `69e90db` so they no longer appear to point
+  at current code.
+- Newly recorded open items: `.env.example`, fixed Compose container names,
+  unpinned `alpine/socat:latest`, legacy `agent.py` model fallback, and the README
+  context-overflow claim for `MAX_HISTORY_MESSAGES`. Documentation-only; runtime
+  tests were not rerun.
