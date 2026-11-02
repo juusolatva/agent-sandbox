@@ -11,6 +11,20 @@ spec.loader.exec_module(sandbox)
 
 
 class PreparationTests(unittest.TestCase):
+    def test_cli_requires_minimum_python(self):
+        with patch.object(sandbox.sys, 'version_info', (3, 12, 9)), \
+             patch.object(sandbox.sys, 'argv', ['sandbox.py', 'check', 'state.json']), \
+             patch.object(sandbox, 'run_command') as run_command, \
+             patch('sys.stderr'), self.assertRaises(SystemExit) as raised:
+            sandbox.main()
+        self.assertNotEqual(raised.exception.code, 0)
+        run_command.assert_not_called()
+
+    def test_examples_declare_minimum_runtimes(self):
+        package = json.loads((sandbox.ROOT / 'examples/fixtures/node/package.json').read_text())
+        self.assertEqual(package['engines']['node'], '>=24.22.1')
+        self.assertIn('requires-python = ">=3.13"', (sandbox.ROOT / 'pyproject.toml').read_text())
+
     def test_manifest_rejects_unknown_fields(self):
         with tempfile.TemporaryDirectory() as directory:
             manifest = Path(directory) / 'project.json'

@@ -281,3 +281,53 @@ Additional Stage 3 validation:
   minimization, scanner-generated targets, semantic deduplication, and candidate
   carryover remain optional extensions. Storage quotas and other limitations from
   Stage 3 remain. See STAGE4.md for commands, budgets, trust boundaries, and limits.
+
+### 2026-11-02 — SonarQube Cloud triage and first fixes
+
+- Triaged all 44 open SonarQube Cloud issues on `a82b01a` (no hotspots; gate
+  failing on new-code security rating C). 3 real, 20 judged false positives
+  (operator-only CLI path rules S8707/S2083, intentional absolute verifier
+  import, dependency-free Rust fixture), 2 design decisions (LAN HTTP fallback),
+  19 optional maintainability items. Sonar statuses not changed yet.
+- Fixed text-action parsing: the `<bash>`/`<done>` regexes backtracked
+  super-linearly on unterminated whitespace (over 60 s for ~8 KB in-process,
+  outside any inference timeout). Replaced with linear prefix/suffix checks;
+  added regression tests that hung before the fix.
+- Moved test bundle construction outside `assertRaises`; added
+  `--only-binary :all:` to the image's pip install (confirmed wheels exist for
+  Python 3.13 and 3.14).
+- Validation: 39 tests discovered, 33 passed, 6 Docker tests skipped. Images
+  were not rebuilt.
+- Follow-up: addressed the remaining 18 confirmed maintainability issues.
+  Split agent dispatch/main, controller run, transfer export, sandbox manifest
+  validation/CLI dispatch, and campaign resume/finding validation into helpers
+  (behavior preserved; export still checks size before reading). Added
+  constants/helpers for duplicated literals and a shared campaign lock helper.
+  Sorted Dockerfile packages and merged the base-stage RUN steps.
+- Validation: 39 unit tests (33 passed, 6 skipped); complexipy reports every
+  function in the edited files at cognitive complexity 15 or below. Rebuilt and
+  prepared the python313 profile; 5 Docker integration tests passed with
+  SANDBOX_DOCKER_TESTS=1 (C++ sanitizer test skipped). Other profiles were not
+  rebuilt. Sonar results will be confirmed on the next analysis.
+- Set runtime minimums: Python 3.13 (`pyproject.toml` `requires-python`, a
+  `sandbox.py` startup check, CI matrix now 3.13/3.14) and Node.js 24.22.1
+  (`engines` in the Node fixture). README and STAGE3 document both. Images were
+  already pinned to Python 3.13.18/3.14.10 and Node 24.22.1. Validation: 41
+  tests (35 passed, 6 skipped); the 3.12 rejection is covered by a mocked test,
+  as no 3.12 interpreter is installed. Node fixture was not re-prepared.
+
+### 2026-11-02 — Stage 4 branch updated onto refactored main
+
+- Merged main (PR #3) into the Stage 4 branch. Resolved campaign.py by keeping
+  Stage 4 behavior (targets, budgets, stall detection, report import, status and
+  review) on the refactored structure: shared lock helper, file-name constants,
+  and helpers for target parsing, eligibility, attempt outcome, stall marking
+  and stop reasons. Moved status/review CLI dispatch into run_campaign_command.
+  Extracted per-finding proposal validation in investigation.py and moved test
+  bundle construction outside assertRaises.
+- Sonar issues on PR #2: 6 path rules (S8707/S2083 in save/status/review) judged
+  false positives, as campaign files are controller-written host state; S3776,
+  S1192 and S5778 addressed by this merge.
+- Validation: 49 tests (41 passed, 8 skipped); complexipy reports all functions
+  at 15 or below; 7 python313 Docker integration tests passed via discover
+  (C++ test skipped). Other profiles were not rebuilt.

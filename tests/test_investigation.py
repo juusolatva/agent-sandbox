@@ -27,8 +27,9 @@ class InvestigationTests(unittest.TestCase):
     def test_invalid_and_oversized_reports_are_rejected(self):
         for report in ([], {'summary': 'test', 'disposition': 'confirmed', 'findings': []},
                        {'summary': 'test', 'disposition': 'no_finding', 'findings': [{}]}):
+            bundle = report_bundle(report)
             with self.subTest(report=report), self.assertRaises(ValueError):
-                import_report(report_bundle(report), 'evidence')
+                import_report(bundle, 'evidence')
         with self.assertRaises(ValueError):
             import_report({REPORT_NAME: {'data': 'x' * 200000}}, 'evidence')
 

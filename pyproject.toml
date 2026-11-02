@@ -1,0 +1,5 @@
+[project]
+name = "agent-sandbox"
+version = "0.1.0"
+description = "Offline, sandboxed local-LLM investigation harness"
+requires-python = ">=3.13"

@@ -33,6 +33,19 @@ class RepetitionGuard:
             raise Stalled('Repeated identical command and result reached the stall limit')
 
 
+PROPOSAL_FIELDS = ('title', 'location', 'root_cause', 'hypothesis', 'conditions', 'reproducer')
+
+
+def proposal(finding, evidence):
+    """Convert one untrusted reported finding into a suspected, controller-evidenced proposal."""
+    if not isinstance(finding, dict) or any(not isinstance(finding.get(k), str) or
+            not finding[k].strip() or len(finding[k]) > 8000 for k in PROPOSAL_FIELDS):
+        raise ValueError('Finding requires bounded nonempty descriptive fields')
+    identity = [finding['location'].strip(), finding['root_cause'].strip()]
+    return dict({k: finding[k] for k in PROPOSAL_FIELDS}, status='suspected',
+                id=hashlib.sha256(json.dumps(identity).encode()).hexdigest(), evidence=[evidence])
+
+
 def import_report(bundle, evidence):
     """Validate data only; never execute a report's reproducer or accept its status."""
     entry = bundle.get(REPORT_NAME)
@@ -53,14 +66,6 @@ def import_report(bundle, evidence):
         raise ValueError('Report requires at most 100 findings')
     if bool(findings) != (report['disposition'] == 'finding'):
         raise ValueError('Report disposition conflicts with its findings')
-    proposals = []
-    fields = ('title', 'location', 'root_cause', 'hypothesis', 'conditions', 'reproducer')
-    for finding in findings:
-        if not isinstance(finding, dict) or any(not isinstance(finding.get(k), str) or
-                not finding[k].strip() or len(finding[k]) > 8000 for k in fields):
-            raise ValueError('Finding requires bounded nonempty descriptive fields')
-        identity = [finding['location'].strip(), finding['root_cause'].strip()]
-        proposals.append(dict({k: finding[k] for k in fields}, status='suspected',
-            id=hashlib.sha256(json.dumps(identity).encode()).hexdigest(), evidence=[evidence]))
+    proposals = [proposal(finding, evidence) for finding in findings]
     return {'status': 'imported', 'summary': report['summary'], 'claimed_disposition': report['disposition'],
             'findings': proposals}
