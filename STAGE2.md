@@ -120,3 +120,38 @@ fixtures with networking disabled on 2026-11-01. Python fixtures installed pytes
 8.4.2 during preparation and passed offline under both interpreters. GCC/Clang
 checks included AddressSanitizer/UndefinedBehaviorSanitizer; Rust tests included
 Clippy. Hosted CI and live LM Studio integration have not been exercised.
+
+## Offline dependency advisory checks
+
+Advisory data is prepared while networked and consumed offline. Both commands run
+on the host, outside any model-controlled container. They need
+[OSV-Scanner](https://google.github.io/osv-scanner/) 2.x on `PATH` for scanning.
+
+```bash
+python3 sandbox.py advisories fetch artifacts/advisories            # all ecosystems, ~270 MB
+python3 sandbox.py advisories fetch artifacts/advisories --ecosystem Go --ecosystem crates.io
+python3 sandbox.py advisories scan artifacts/go.json artifacts/advisories \
+  --output artifacts/go-advisories.json
+```
+
+`fetch` downloads OSV ecosystem databases (Go, PyPI, crates.io, npm) from
+`osv-vulnerabilities.storage.googleapis.com`, checks each archive, and writes
+`metadata.json` (SHA-256, size, upstream `Last-Modified`, fetch time) last, so a
+failed download never replaces a good snapshot. Repeated runs refresh the listed
+ecosystems and keep the others.
+
+`scan` copies recognised lockfiles (`go.mod`, `Cargo.lock`, `package-lock.json`,
+`requirements*.txt`, `poetry.lock`, `uv.lock`, `Pipfile.lock`) out of the prepared
+image with networking disabled, re-verifies the snapshot hashes, and runs
+OSV-Scanner with `--offline --offline-vulnerabilities`. Exit status: `0` clean,
+`1` known advisories found, `2` the check is incomplete (missing ecosystem
+database, no lockfile, scanner unavailable or failing, tampered database, or a
+snapshot older than `--max-age-days`, default 7). Incomplete is never reported as
+clean. The JSON report records the snapshot's age and hashes.
+
+Limits: this matches declared dependency versions to known advisories only. It
+does not show code is safe, does not analyse reachability (govulncheck) or Cargo
+audit semantics, skips vendored/`node_modules`/`.venv` copies, and sees only
+lockfiles that exist in the prepared source; the bundled Python fixture installs
+pytest at preparation time, so it has nothing to check. Snapshots are not baked
+into prepared images, and the model cannot reach them.

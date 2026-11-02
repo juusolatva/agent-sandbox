@@ -437,3 +437,19 @@ Additional Stage 3 validation:
 - PR #8 review follow-up: an oversized newest tool result was dropped together with
   its assistant call's orphan check, hiding the latest output. Trimming now extends
   backwards to keep the whole newest exchange; regression test added (68 tests, 8 skipped).
+
+### 2026-11-02 — Offline dependency advisory snapshots
+
+- Added `advisories.py` and `sandbox.py advisories fetch|scan`. `fetch` stores
+  hash-verified OSV databases (Go, PyPI, crates.io, npm) with fetch timestamps,
+  writing metadata only after complete verified downloads. `scan` extracts
+  lockfiles from a prepared image with networking disabled and checks them with
+  OSV-Scanner `--offline`; missing databases, no lockfiles, a tampered or stale
+  snapshot, or scanner failure yield exit 2 and are never reported as clean.
+- Validation: 84 tests (76 passed, 8 skipped), including a real OSV-Scanner run
+  against a synthetic snapshot. Manually fetched the live Go and crates.io
+  databases and scanned the prepared Go and Rust fixtures (no advisories, exit 0)
+  and the Python fixture (no lockfile, exit 2). Images were not rebuilt.
+- Not done: govulncheck, cargo-audit and pip-audit integration, reachability
+  analysis, npm scanning against a live npm snapshot (220 MB, not fetched here),
+  and feeding reports to the model. Snapshots stay on the host.

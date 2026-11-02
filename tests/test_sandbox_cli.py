@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import advisories
 import campaign
 import controller
 import execution
@@ -150,6 +151,38 @@ class CliTests(unittest.TestCase):
             _, stdout, _ = self.invoke('campaign', 'replay', 'camp', 'runs/0/a', str(reproducer), '--timeout', '15')
         self.assertEqual(stdout, 'runs/replays/x\n')
         replay.assert_called_once_with('camp', 'runs/0/a', 'python3 -m pytest -x\n', 15.0)
+
+    def test_advisory_ecosystems_match_module(self):
+        self.assertEqual(sandbox.ADVISORY_ECOSYSTEMS, advisories.ECOSYSTEMS)
+
+    def test_advisories_fetch_forwards_ecosystems(self):
+        metadata = {'fetched_at': 'now', 'databases': {'Go': {}}}
+        with patch.object(advisories, 'fetch', return_value=metadata) as fetch:
+            self.invoke('advisories', 'fetch', 'snap', '--ecosystem', 'Go', '--ecosystem', 'npm')
+            fetch.assert_called_once_with('snap', ('Go', 'npm'))
+            fetch.reset_mock()
+            self.invoke('advisories', 'fetch', 'snap')
+            fetch.assert_called_once_with('snap', advisories.ECOSYSTEMS)
+        code, _, stderr = self.invoke('advisories', 'fetch', 'snap', '--ecosystem', 'Hackage')
+        self.assertEqual(code, 2)
+
+    def test_advisories_scan_writes_report_and_maps_status(self):
+        report = {'snapshot': {'fetched_at': 'x', 'age_days': 1, 'stale': False}, 'checks': [
+            {'lockfile': 'go.mod', 'status': 'scanned', 'vulnerabilities': [
+                {'id': 'GO-1', 'package': 'p', 'version': '1'}]}]}
+        output = self.directory / 'out' / 'report.json'
+        with patch.object(advisories, 'scan_image', return_value=report) as scan:
+            code, stdout, _ = self.invoke('advisories', 'scan', str(self.state), 'snap',
+                                          '--output', str(output), '--max-age-days', '3')
+        scan.assert_called_once_with('sha256:fixture', 'snap', 3.0)
+        self.assertEqual(code, 1)
+        self.assertIn('GO-1', stdout)
+        self.assertEqual(json.loads(output.read_text()), report)
+        with patch.object(advisories, 'scan_image', return_value={**report, 'checks': []}):
+            self.assertEqual(self.invoke('advisories', 'scan', str(self.state), 'snap')[0], 2)
+        report['checks'][0]['vulnerabilities'] = []
+        with patch.object(advisories, 'scan_image', return_value=report):
+            self.assertEqual(self.invoke('advisories', 'scan', str(self.state), 'snap')[0], 0)
 
 
 if __name__ == '__main__':
