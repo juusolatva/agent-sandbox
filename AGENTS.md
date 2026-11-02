@@ -366,3 +366,15 @@ Additional Stage 3 validation:
   code scanning is not enabled on this private repository (requires GitHub
   Code Security). SARIF upload is now gated on the `OSV_UPLOAD_SARIF`
   repository variable (off by default); scans still fail on vulnerabilities.
+
+### 2026-11-02 — Go and Rust fixture minimums; C++ smoke assertion
+
+- Declared fixture toolchain minimums: Go 1.26 (`go` directive) and Rust 1.88
+  (`rust-version`); images remain Go 1.27.3 and Rust 1.99.1. README documents
+  all fixture minimums; the minimum-runtime test covers them.
+- Addressed Sonar cpp:S6994 by making the C++ smoke program assert on a
+  runtime call to the fixture's `add()` instead of a constant expression, so
+  the GCC and sanitizer builds exercise project code.
+- Validation: unit suite passed; go, rust and cpp images built, prepared and
+  checked offline; protected baselines for all three and the 100-start
+  sanitizer regression passed.

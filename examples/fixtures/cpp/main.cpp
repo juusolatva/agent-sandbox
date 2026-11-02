@@ -1,2 +1,4 @@
+#include "calculator.h"
 #include <cassert>
-int main() { assert(2 + 2 == 4); }
+// Runtime call: exercises project code under the GCC and sanitizer builds.
+int main() { assert(add(2, 2) == 4); }
