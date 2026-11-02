@@ -120,6 +120,32 @@ class CampaignTests(unittest.TestCase):
             ledger = json.loads((directory / 'findings.json').read_text())
             self.assertEqual(ledger[0]['observations'][0]['status'], 'rejected')
 
+    def test_status_reports_finding_index_used_by_review(self):
+        from test_investigation import finding_report, report_bundle
+        report = finding_report()
+        second = dict(report['findings'][0], title='Leak', location='decode.c:free', root_cause='double free')
+        report['findings'].append(second)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'state').write_text('{}')
+            (root / 'tasks').write_text(json.dumps(['decoder']))
+            directory = root / 'campaign'
+            campaign.create(directory, root / 'state', root / 'tasks')
+
+            def runner(record, task, artifacts, *args, **kwargs):
+                run = Path(artifacts) / 'run'
+                run.mkdir()
+                (run / 'result.json').write_text('{"status":"exhausted"}')
+                (run / 'candidate.json').write_text(json.dumps(report_bundle(report)))
+                return 2
+            campaign.resume(directory, 1, 1, 1, runner=runner)
+            groups = campaign.status(directory)['proposed_findings'].values()
+            leak = next(g for g in groups if g['title'] == 'Leak')['observations'][0]
+            self.assertEqual((leak['target'], leak['attempt'], leak['finding']), (0, 0, 1))
+            campaign.review(directory, leak['target'], leak['attempt'], leak['finding'], 'rejected')
+            ledger = json.loads((directory / 'findings.json').read_text())
+            self.assertEqual(ledger[0]['observations'][0]['title'], 'Leak')
+
     def test_state_identity_and_finite_budgets(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

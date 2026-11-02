@@ -331,3 +331,10 @@ Additional Stage 3 validation:
 - Validation: 49 tests (41 passed, 8 skipped); complexipy reports all functions
   at 15 or below; 7 python313 Docker integration tests passed via discover
   (C++ test skipped). Other profiles were not rebuilt.
+- Review follow-up (Greptile, Sonar): repetition detection now compares a
+  SHA-256 of the complete command output stream (computed in bounded_process)
+  instead of the 8,000-byte retained text, so runs differing only after the
+  limit no longer stall a target. Campaign status observations include the
+  finding index that review() expects. Moved controller run callbacks into
+  RunSession to clear the remaining S3776 issue. Validation: 51 tests (43
+  passed, 8 skipped); 7 python313 Docker integration tests passed.

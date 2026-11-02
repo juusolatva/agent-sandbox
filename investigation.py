@@ -27,6 +27,7 @@ class RepetitionGuard:
         self.counts = {}
 
     def observe(self, command, code, output):
+        """Count a command result; output should identify the full, untruncated stream."""
         identity = (command.strip(), code, hashlib.sha256(output.encode()).hexdigest())
         self.counts[identity] = self.counts.get(identity, 0) + 1
         if self.counts[identity] >= self.limit:

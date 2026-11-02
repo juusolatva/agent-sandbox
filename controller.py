@@ -108,6 +108,44 @@ def save_candidate(worker, before, evidence):
                   if before.get(k) != candidate.get(k)), 'binary_or_unsupported': binary})
 
 
+class RunSession:
+    """Agent-loop callbacks bound to one worker, evidence store, and run deadline."""
+
+    def __init__(self, record, worker, evidence, deadline, result, text_actions):
+        self.record = record
+        self.worker = worker
+        self.evidence = evidence
+        self.deadline = deadline
+        self.result = result
+        self.text_actions = text_actions
+        self.repetition = RepetitionGuard()
+
+    def execute(self, command, label='sandbox $'):
+        # Compare the complete output stream, not the truncated text shown to the model.
+        digest = hashlib.sha256()
+        code, output = self.worker.execute(command, timeout=agent.COMMAND_TIMEOUT, digest=digest)
+        self.repetition.observe(command, code, digest.hexdigest())
+        return code, f"Exit code: {code}\n{output}"
+
+    def gate(self):
+        candidate = self.worker.export()
+        transfer.validate(candidate)
+        code, output = verify(self.record, candidate, self.evidence.event, self.deadline)
+        self.result['candidate_verified'] = code == 0
+        return code == 0, output
+
+    def infer(self, client, model, messages):
+        bounded = DeadlineClient(client, self.deadline)
+        if self.text_actions:
+            response = bounded.create(model=model, messages=agent.flatten_messages_for_fallback(messages))
+            msg, fallback = response.choices[0].message, True
+        else:
+            msg, fallback = agent.call_llm_resilient(bounded, model, messages)
+        if msg is not None:
+            self.evidence.event({'kind': 'assistant', 'message': msg.model_dump(), 'fallback': fallback})
+        return msg, fallback
+
+
 def run(record, task, artifact_root, base_url=None, model=None, steps=20, timeout=1800,
         client=None, text_actions=False):
     if steps <= 0 or timeout <= 0:
@@ -140,36 +178,11 @@ def run(record, task, artifact_root, base_url=None, model=None, steps=20, timeou
             transfer.validate(before)
             evidence.save('original.json', before)
 
-            repetition = RepetitionGuard()
-
-            def execute(command, label='sandbox $'):
-                code, output = worker.execute(command, timeout=agent.COMMAND_TIMEOUT)
-                repetition.observe(command, code, output)
-                return code, f"Exit code: {code}\n{output}"
-
-            def gate():
-                candidate = worker.export()
-                transfer.validate(candidate)
-                code, output = verify(record, candidate, evidence.event, deadline)
-                result['candidate_verified'] = code == 0
-                return code == 0, output
-
-            def infer(client, model, messages):
-                bounded = DeadlineClient(client, deadline)
-                if text_actions:
-                    response = bounded.create(model=model,
-                        messages=agent.flatten_messages_for_fallback(messages))
-                    msg, fallback = response.choices[0].message, True
-                else:
-                    msg, fallback = agent.call_llm_resilient(bounded, model, messages)
-                if msg is not None:
-                    evidence.event({'kind': 'assistant', 'message': msg.model_dump(), 'fallback': fallback})
-                return msg, fallback
-
+            session = RunSession(record, worker, evidence, deadline, result, text_actions)
             with (evidence.path / 'controller.log').open('w') as log, contextlib.redirect_stdout(log):
                 try:
-                    outcome = agent.run_agent_loop(client, model, task, execute=execute,
-                                                   verify=gate, infer=infer, steps=steps)
+                    outcome = agent.run_agent_loop(client, model, task, execute=session.execute,
+                                                   verify=session.gate, infer=session.infer, steps=steps)
                 finally:
                     save_candidate(worker, before, evidence)
         result['status'] = outcome.name.lower()

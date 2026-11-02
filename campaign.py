@@ -329,9 +329,11 @@ def status(directory):
             if not attempt.get('proposals'):
                 continue
             report = json.loads((directory / attempt['proposals']).read_text())
-            for finding in report['findings']:
+            # target/attempt/finding are exactly the indices review() expects.
+            for position, finding in enumerate(report['findings']):
                 group = groups.setdefault(finding['id'], {'title': finding['title'], 'observations': []})
-                group['observations'].append({'target': index, 'attempt': number, 'evidence': finding['evidence']})
+                group['observations'].append({'target': index, 'attempt': number, 'finding': position,
+                                              'evidence': finding['evidence']})
     return {'campaign': data, 'proposed_findings': groups}
 
 
