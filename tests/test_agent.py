@@ -197,15 +197,33 @@ class AgentTests(unittest.TestCase):
 
     def test_notes_are_bounded_and_report_omissions(self):
         notes = agent.HistoryNotes()
-        with patch.object(agent, 'MAX_SUMMARY_CHARS', 300), patch.object(agent, 'MAX_NOTES', 5):
+        with patch.object(agent, 'MAX_SUMMARY_CHARS', 450), patch.object(agent, 'MAX_NOTES', 5):
             notes.add([f'$ cmd{i} => Exit code: 0' for i in range(8)])
             text = notes.render()
-        self.assertLessEqual(len(text.split('\n', 2)[2]), 300)
+        self.assertLessEqual(len(text), 450)  # header and omission note count against the cap
         self.assertIn('[3 older actions omitted]', text)
         self.assertIn('cmd7', text)
         self.assertNotIn('cmd0', text)
         with patch.object(agent, 'MAX_SUMMARY_CHARS', 0):
             self.assertEqual(notes.render(), '')
+        with patch.object(agent, 'MAX_SUMMARY_CHARS', 100):  # too small to hold even the header
+            self.assertEqual(notes.render(), '')
+
+    def test_text_action_split_across_trims_is_still_recorded(self):
+        notes = agent.HistoryNotes()
+        notes.add_dropped([{'role': 'assistant', 'content': '<bash>make</bash>'}])
+        self.assertEqual(notes.lines, [])
+        notes.add_dropped([{'role': 'user', 'content': 'Exit code: 1\nerror: boom'}])
+        self.assertEqual(notes.lines, ['$ make => Exit code: 1; error: boom'])
+
+    def test_full_record_fits_reserved_budget(self):
+        notes = agent.HistoryNotes()
+        notes.add([f'$ {"c" * 150} {i} => Exit code: 0; ' + 'o' * 60 for i in range(100)])
+        with patch.object(agent, 'MAX_SUMMARY_CHARS', 1000):
+            record = notes.render()
+            view = agent.with_notes([{'role': 'system', 'content': ''}, {'role': 'user', 'content': ''}], notes)
+        self.assertLessEqual(len(record), 1000)
+        self.assertLessEqual(len(view[1]['content']), 1000 + 2)
 
     def test_prompt_view_keeps_original_task_and_adds_record(self):
         notes = agent.HistoryNotes()

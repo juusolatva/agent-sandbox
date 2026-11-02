@@ -467,7 +467,9 @@ Additional Stage 3 validation:
   and last output lines) of messages that leave the history window and appends it to
   the task message in each prompt view; the stored transcript and original task are
   unchanged. Window budget reserves space for it. `MAX_SUMMARY_CHARS` (default 3000,
-  `0` disables) is wired through Compose, `.env.example` and README.
+  `0` disables) is wired through Compose, `.env.example` and README. The cap covers the
+  whole record including header and omission note, and unfinished text-action pairs
+  carry across trims (PR #10 review).
 - Chosen over a model-written summary because it needs no extra inference, cannot be
   steered by the model into dropping evidence, and is testable offline. It loses the
   model's reasoning and hypotheses; excerpts are labelled untrusted program output.
