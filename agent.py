@@ -30,6 +30,9 @@ API_KEY = os.environ.get("OPENAI_API_KEY", "lm-studio")
 MODEL_ENV = os.environ.get("LLM_MODEL", "").strip()
 MAX_ITERATIONS = int(os.environ.get("MAX_ITERATIONS", "20"))  # 0 = infinite steps
 MAX_HISTORY_MESSAGES = int(os.environ.get("MAX_HISTORY_MESSAGES", "24"))
+# Estimated prompt-token budget for the retained history; 0 disables it.
+MAX_CONTEXT_TOKENS = int(os.environ.get("MAX_CONTEXT_TOKENS", "12000"))
+CHARS_PER_TOKEN = 3  # conservative estimate; no tokenizer is available offline
 COMMAND_TIMEOUT = int(os.environ.get("COMMAND_TIMEOUT", "30"))
 VERIFY_CMD = os.environ.get("VERIFY_CMD", "").strip()
 CONTINUOUS = os.environ.get("CONTINUOUS", "0").strip().lower() in {"1", "true", "yes"}
@@ -177,16 +180,41 @@ def check_verification_gate() -> tuple[bool, str]:
     )
 
 
-def trim_history(messages: list[dict]) -> list[dict]:
-    """Keep system + initial user task + most recent messages with a bounded message count (not a token budget)."""
-    if MAX_HISTORY_MESSAGES <= 0 or len(messages) <= MAX_HISTORY_MESSAGES + 2:
-        return messages
-    head = messages[:2]
-    tail = messages[-MAX_HISTORY_MESSAGES:]
-    # Avoid starting tail on an orphaned 'tool' response without its preceding 'assistant' tool_calls
+def estimate_tokens(message: dict) -> int:
+    """Roughly estimate the prompt tokens of one message, including tool-call arguments."""
+    size = len(message.get("content") or "")
+    for call in message.get("tool_calls") or []:
+        function = call.get("function", {})
+        size += len(str(function.get("name", ""))) + len(str(function.get("arguments", "")))
+    return size // CHARS_PER_TOKEN + 4
+
+
+def drop_orphaned_tool_results(tail: list[dict]) -> list[dict]:
+    """Avoid starting on a 'tool' response whose assistant tool_calls were trimmed away."""
     while tail and tail[0].get("role") == "tool":
         tail = tail[1:]
-    return head + tail
+    return tail
+
+
+def trim_history(messages: list[dict]) -> list[dict]:
+    """Keep system + task, then the most recent messages within the message and estimated-token limits.
+
+    The newest message is always kept, so a single oversized message can still exceed the budget.
+    """
+    head = messages[:2]
+    tail = messages[2:]
+    if MAX_HISTORY_MESSAGES > 0:
+        tail = tail[-MAX_HISTORY_MESSAGES:]
+    if MAX_CONTEXT_TOKENS > 0:
+        remaining = MAX_CONTEXT_TOKENS - sum(estimate_tokens(m) for m in head)
+        kept: list[dict] = []
+        for message in reversed(tail):
+            remaining -= estimate_tokens(message)
+            if remaining < 0 and kept:
+                break
+            kept.append(message)
+        tail = kept[::-1]
+    return head + drop_orphaned_tool_results(tail)
 
 
 def assistant_text(message: dict) -> str:
