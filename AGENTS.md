@@ -253,6 +253,35 @@ Additional Stage 3 validation:
 - Validation: 37 tests discovered, 31 passed and 6 opt-in Docker tests skipped. New tests cover separate replay workers, retained results, recorded-run selection, and retry limits. Actual Docker replay and live inference were not run in this update.
 - Replay status records an exit-code comparison, not independent confirmation of a bug. Automated target selection, finding extraction, coverage tracking, repeated-command detection, and reproducer minimization remain outstanding.
 
+### 2026-11-01 — Stage 4 completed and validated locally
+
+- Added structured operator targets with scopes and priorities, persistent fair
+  selection, invocation time budgets, explicit continued selection after failures,
+  recorded attempted scopes, and terminal reasons when no targets remain eligible.
+- Added repeated command/result termination in the controller and unchanged-source
+  detection across unsuccessful attempts. Stalled targets are retained and skipped.
+- Campaign prompts request hypotheses, necessary conditions, and structured reports.
+  Bounded candidate-report imports preserve untrusted proposals and exact
+  location/root-cause grouping. Only explicit operator review writes decisions to
+  the reviewed findings ledger. Model statuses, host paths, and reproducer text
+  cannot authorize execution or confirmation.
+- New campaigns check prepared-state identity. State replacement also syncs the
+  containing directory. Existing version 1 campaigns remain compatible without the
+  new integrity check.
+- Validation: all 45 tests passed with Docker enabled, including all six protected
+  language baselines, the sanitizer regression, proposal import/review, known
+  original failure and candidate success on the synthetic fixture, replay timeout
+  handling, repeated-command termination, and retained artifacts. Hosted CI and
+  live model campaign quality were not tested in this update.
+- Retained an additional synthetic workflow/replay at
+  `artifacts/campaigns/stage4-validation-7a8b02b6/`. Its model is a fake client; its
+  proposed finding was explicitly rejected. The expected replay failure is the
+  fixture's missing evidence file, not a discovered application vulnerability.
+- Stage 4's bounded campaign workflow is complete locally. Automatic reproducer
+  minimization, scanner-generated targets, semantic deduplication, and candidate
+  carryover remain optional extensions. Storage quotas and other limitations from
+  Stage 3 remain. See STAGE4.md for commands, budgets, trust boundaries, and limits.
+
 ### 2026-11-02 — SonarQube Cloud triage and first fixes
 
 - Triaged all 44 open SonarQube Cloud issues on `a82b01a` (no hotspots; gate
@@ -286,3 +315,26 @@ Additional Stage 3 validation:
   already pinned to Python 3.13.18/3.14.10 and Node 24.22.1. Validation: 41
   tests (35 passed, 6 skipped); the 3.12 rejection is covered by a mocked test,
   as no 3.12 interpreter is installed. Node fixture was not re-prepared.
+
+### 2026-11-02 — Stage 4 branch updated onto refactored main
+
+- Merged main (PR #3) into the Stage 4 branch. Resolved campaign.py by keeping
+  Stage 4 behavior (targets, budgets, stall detection, report import, status and
+  review) on the refactored structure: shared lock helper, file-name constants,
+  and helpers for target parsing, eligibility, attempt outcome, stall marking
+  and stop reasons. Moved status/review CLI dispatch into run_campaign_command.
+  Extracted per-finding proposal validation in investigation.py and moved test
+  bundle construction outside assertRaises.
+- Sonar issues on PR #2: 6 path rules (S8707/S2083 in save/status/review) judged
+  false positives, as campaign files are controller-written host state; S3776,
+  S1192 and S5778 addressed by this merge.
+- Validation: 49 tests (41 passed, 8 skipped); complexipy reports all functions
+  at 15 or below; 7 python313 Docker integration tests passed via discover
+  (C++ test skipped). Other profiles were not rebuilt.
+- Review follow-up (Greptile, Sonar): repetition detection now compares a
+  SHA-256 of the complete command output stream (computed in bounded_process)
+  instead of the 8,000-byte retained text, so runs differing only after the
+  limit no longer stall a target. Campaign status observations include the
+  finding index that review() expects. Moved controller run callbacks into
+  RunSession to clear the remaining S3776 issue. Validation: 51 tests (43
+  passed, 8 skipped); 7 python313 Docker integration tests passed.

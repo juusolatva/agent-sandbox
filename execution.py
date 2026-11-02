@@ -12,8 +12,13 @@ import uuid
 TRANSFER = Path(__file__).resolve().parent / 'docker/transfer.py'
 
 
-def bounded_process(argv, timeout, limit=8000, input_bytes=None):
-    """Drain arbitrary output with bounded retention and a wall-clock deadline."""
+def bounded_process(argv, timeout, limit=8000, input_bytes=None, digest=None):
+    """Drain arbitrary output with bounded retention and a wall-clock deadline.
+
+    An optional hashlib digest is updated with the complete output stream, so
+    callers can compare results that differ only after the retention limit.
+    """
+    update = digest.update if digest is not None else (lambda chunk: None)
     output = bytearray()
     truncated = False
     with tempfile.TemporaryFile() as incoming:
@@ -35,6 +40,7 @@ def bounded_process(argv, timeout, limit=8000, input_bytes=None):
                         if not chunk:
                             selector.unregister(key.fileobj)
                         else:
+                            update(chunk)
                             available = limit - len(output)
                             output.extend(chunk[:available])
                             truncated |= len(chunk) > available
@@ -75,7 +81,8 @@ class Worker:
             subprocess.run(['docker', 'volume', 'rm', '-f', self.volume], check=False,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
 
-    def execute(self, command, *, readonly=False, transfer=None, payload=None, limit=8000, timeout=None):
+    def execute(self, command, *, readonly=False, transfer=None, payload=None, limit=8000, timeout=None,
+                digest=None):
         config = self.record['config']
         timeout = timeout or config.get('timeout', 600)
         if transfer:
@@ -111,7 +118,7 @@ class Worker:
                      'mkdir -p /tmp/home; ' + command]
         started = time.monotonic()
         try:
-            code, output = bounded_process(args, timeout, limit, payload)
+            code, output = bounded_process(args, timeout, limit, payload, digest)
         finally:
             # Includes timeout, Ctrl-C, and detached descendants of project commands.
             subprocess.run(['docker', 'rm', '-f', name], check=False, timeout=30,

@@ -12,6 +12,7 @@ import time
 import uuid
 
 import agent
+from investigation import RepetitionGuard, Stalled
 from execution import Worker, verify
 
 # This is our own trusted transfer implementation, not project code.
@@ -107,6 +108,44 @@ def save_candidate(worker, before, evidence):
                   if before.get(k) != candidate.get(k)), 'binary_or_unsupported': binary})
 
 
+class RunSession:
+    """Agent-loop callbacks bound to one worker, evidence store, and run deadline."""
+
+    def __init__(self, record, worker, evidence, deadline, result, text_actions):
+        self.record = record
+        self.worker = worker
+        self.evidence = evidence
+        self.deadline = deadline
+        self.result = result
+        self.text_actions = text_actions
+        self.repetition = RepetitionGuard()
+
+    def execute(self, command):
+        # Compare the complete output stream, not the truncated text shown to the model.
+        digest = hashlib.sha256()
+        code, output = self.worker.execute(command, timeout=agent.COMMAND_TIMEOUT, digest=digest)
+        self.repetition.observe(command, code, digest.hexdigest())
+        return code, f"Exit code: {code}\n{output}"
+
+    def gate(self):
+        candidate = self.worker.export()
+        transfer.validate(candidate)
+        code, output = verify(self.record, candidate, self.evidence.event, self.deadline)
+        self.result['candidate_verified'] = code == 0
+        return code == 0, output
+
+    def infer(self, client, model, messages):
+        bounded = DeadlineClient(client, self.deadline)
+        if self.text_actions:
+            response = bounded.create(model=model, messages=agent.flatten_messages_for_fallback(messages))
+            msg, fallback = response.choices[0].message, True
+        else:
+            msg, fallback = agent.call_llm_resilient(bounded, model, messages)
+        if msg is not None:
+            self.evidence.event({'kind': 'assistant', 'message': msg.model_dump(), 'fallback': fallback})
+        return msg, fallback
+
+
 def run(record, task, artifact_root, base_url=None, model=None, steps=20, timeout=1800,
         client=None, text_actions=False):
     if steps <= 0 or timeout <= 0:
@@ -116,7 +155,7 @@ def run(record, task, artifact_root, base_url=None, model=None, steps=20, timeou
     evidence = Evidence(artifact_root)
     deadline = time.monotonic() + timeout
     runtime_hash = hashlib.sha256(b''.join((Path(__file__).parent / name).read_bytes()
-        for name in ('controller.py', 'execution.py', 'agent.py', 'docker/transfer.py'))).hexdigest()
+        for name in ('controller.py', 'execution.py', 'agent.py', 'investigation.py', 'docker/transfer.py'))).hexdigest()
     result = {'runtime_hash': runtime_hash, 'command_timeout': agent.COMMAND_TIMEOUT,
               'llm_timeout': agent.LLM_TIMEOUT, 'max_response_tokens': 4096, 'status': 'failed', 'image': record['image'], 'source_hash': record['source_hash'],
               'verification_hash': record['verification_hash'], 'task': task, 'steps': steps,
@@ -139,33 +178,11 @@ def run(record, task, artifact_root, base_url=None, model=None, steps=20, timeou
             transfer.validate(before)
             evidence.save('original.json', before)
 
-            def execute(command, label='sandbox $'):
-                code, output = worker.execute(command, timeout=agent.COMMAND_TIMEOUT)
-                return code, f"Exit code: {code}\n{output}"
-
-            def gate():
-                candidate = worker.export()
-                transfer.validate(candidate)
-                code, output = verify(record, candidate, evidence.event, deadline)
-                result['candidate_verified'] = code == 0
-                return code == 0, output
-
-            def infer(client, model, messages):
-                bounded = DeadlineClient(client, deadline)
-                if text_actions:
-                    response = bounded.create(model=model,
-                        messages=agent.flatten_messages_for_fallback(messages))
-                    msg, fallback = response.choices[0].message, True
-                else:
-                    msg, fallback = agent.call_llm_resilient(bounded, model, messages)
-                if msg is not None:
-                    evidence.event({'kind': 'assistant', 'message': msg.model_dump(), 'fallback': fallback})
-                return msg, fallback
-
+            session = RunSession(record, worker, evidence, deadline, result, text_actions)
             with (evidence.path / 'controller.log').open('w') as log, contextlib.redirect_stdout(log):
                 try:
-                    outcome = agent.run_agent_loop(client, model, task, execute=execute,
-                                                   verify=gate, infer=infer, steps=steps)
+                    outcome = agent.run_agent_loop(client, model, task, execute=session.execute,
+                                                   verify=session.gate, infer=session.infer, steps=steps)
                 finally:
                     save_candidate(worker, before, evidence)
         result['status'] = outcome.name.lower()
@@ -176,6 +193,8 @@ def run(record, task, artifact_root, base_url=None, model=None, steps=20, timeou
         outcome = agent.Outcome.FAILED
         result['status'] = 'failed'
         result['error'] = str(exc)[:4000]
+        if isinstance(exc, Stalled):
+            result['stop_reason'] = 'repeated_command'
     finally:
         if connected and client is not None:
             client.close()

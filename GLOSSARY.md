@@ -140,3 +140,15 @@ with the same location and root-cause text are grouped for review.
 **Reproducer replay**:
 Execution of an operator-selected command against original and candidate snapshots in
 separate workers, retaining both results for assessment.
+
+**Investigation target**:
+An operator-defined task and scope queued within a campaign, with an optional
+priority used for selection.
+
+**Finding proposal**:
+An untrusted structured claim imported from a run's candidate snapshot. A proposal
+requires operator review before it becomes a reviewed finding observation.
+
+**Stalled target**:
+A target skipped after repeated identical command/results or unchanged candidates
+across unsuccessful attempts. Its retained evidence remains available for review.

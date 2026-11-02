@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -76,6 +77,17 @@ class TransferTests(unittest.TestCase):
         self.assertLess(len(output), 200)
         code, _ = execution.bounded_process(['sleep', '2'], .05)
         self.assertEqual(code, 124)
+
+    def test_digest_covers_output_beyond_retention_limit(self):
+        # Same retained prefix, different later failure: repetition must not treat them as equal.
+        digests = []
+        for tail in ('first failure', 'second failure'):
+            digest = hashlib.sha256()
+            _, output = execution.bounded_process(
+                ['python3', '-c', f'print("x" * 20000); print({tail!r})'], 5, 100, digest=digest)
+            digests.append((output, digest.hexdigest()))
+        self.assertEqual(digests[0][0], digests[1][0])
+        self.assertNotEqual(digests[0][1], digests[1][1])
 
     def test_connection_falls_back_to_supplied_host(self):
         from unittest.mock import Mock
