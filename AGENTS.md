@@ -473,7 +473,7 @@ Additional Stage 3 validation:
 - Chosen over a model-written summary because it needs no extra inference, cannot be
   steered by the model into dropping evidence, and is testable offline. It loses the
   model's reasoning and hypotheses; excerpts are labelled untrusted program output.
-- Validation: 6 new tests in `tests/test_agent.py`; full suite 93 tests passed with
+- Validation: 8 new tests in `tests/test_agent.py`; full suite 95 tests passed with
   `SANDBOX_DOCKER_TESTS=1`; Compose config validates. The record is not yet
   persisted in run artifacts.
 - Live check (Gemma 4 12B, python313 fixture, `MAX_HISTORY_MESSAGES=6`, 14 steps):
