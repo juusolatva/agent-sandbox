@@ -239,3 +239,7 @@ the working directory when running the harness directly outside Compose.
 project files. Independent protected verification, language images, offline
 preparation, and persistent investigation state remain later stages; see
 [the implementation proposal](IMPROVEMENTS.md) and [progress](AGENTS.md).
+
+## License
+
+This project is released under the [MIT License](LICENSE).

@@ -433,3 +433,4 @@ Additional Stage 3 validation:
   README corrected; Compose and `.env.example` pass the new setting.
 - Validation: 3 new tests in `tests/test_agent.py` pass with the existing ones
   (17 in that module). No live inference was run. Compaction summaries remain open.
+- Added a License section to README.md pointing at the MIT `LICENSE` file.
