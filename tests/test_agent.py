@@ -135,6 +135,40 @@ class AgentTests(unittest.TestCase):
         with patch.object(agent, 'MODEL_ENV', 'chosen/model'):
             self.assertEqual(agent.get_active_model(), 'chosen/model')
 
+    def test_history_is_trimmed_to_token_budget_keeping_tool_exchanges_whole(self):
+        call = {'id': 'c', 'function': {'name': 'run_bash', 'arguments': '{"command":"ls"}'}}
+        history = [{'role': 'system', 'content': 's'}, {'role': 'user', 'content': 'task'}]
+        for index in range(10):
+            history += [{'role': 'assistant', 'content': '', 'tool_calls': [call]},
+                        {'role': 'tool', 'tool_call_id': 'c', 'content': f'{index}' + 'x' * 3000}]
+        with patch.object(agent, 'MAX_HISTORY_MESSAGES', 100), patch.object(agent, 'MAX_CONTEXT_TOKENS', 3000):
+            trimmed = agent.trim_history(history)
+        self.assertEqual(trimmed[:2], history[:2])
+        self.assertLess(len(trimmed), len(history))
+        self.assertEqual(trimmed[-1], history[-1])
+        self.assertNotEqual(trimmed[2]['role'], 'tool')
+        self.assertEqual(trimmed[-2]['role'], 'assistant')
+        self.assertLessEqual(sum(map(agent.estimate_tokens, trimmed)), 3000 + agent.estimate_tokens(history[-1]))
+
+    def test_newest_message_survives_even_if_oversized(self):
+        history = [{'role': 'system', 'content': 's'}, {'role': 'user', 'content': 't'},
+                   {'role': 'user', 'content': 'y' * 100000}]
+        with patch.object(agent, 'MAX_CONTEXT_TOKENS', 100):
+            self.assertEqual(agent.trim_history(history), history)
+
+    def test_oversized_latest_tool_exchange_is_kept_whole(self):
+        call = {'id': 'c', 'function': {'name': 'run_bash', 'arguments': '{"command":"cat big"}'}}
+        history = [{'role': 'system', 'content': 's'}, {'role': 'user', 'content': 't'},
+                   {'role': 'assistant', 'content': '', 'tool_calls': [call]},
+                   {'role': 'tool', 'tool_call_id': 'c', 'content': 'z' * 8000}]
+        with patch.object(agent, 'MAX_CONTEXT_TOKENS', 2000):
+            self.assertEqual(agent.trim_history(history), history)
+
+    def test_zero_limits_disable_trimming(self):
+        history = [{'role': 'user', 'content': 'x' * 100} for _ in range(50)]
+        with patch.object(agent, 'MAX_HISTORY_MESSAGES', 0), patch.object(agent, 'MAX_CONTEXT_TOKENS', 0):
+            self.assertEqual(agent.trim_history(history), history)
+
 
 if __name__ == '__main__':
     unittest.main()

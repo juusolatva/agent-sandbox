@@ -34,8 +34,8 @@ Partially implemented:
 
 Open:
 
-- Token-based context budgeting (history is still bounded by message count) and
-  the matching README claim at the `MAX_HISTORY_MESSAGES` setting.
+- Compact investigation summary outside the transcript (history trimming just drops
+  old messages; the token budget is an estimate, not a tokenizer count).
 - Additional analysis tools: Staticcheck, govulncheck, cargo-audit, Ruff,
   Hypothesis, ESLint, and coverage-guided fuzzing.
 - Offline dependency advisory snapshots.
@@ -53,7 +53,7 @@ environments, independent verification, and persistent investigation state.
 
 ### 1. Fix the agent's completion and execution behavior first
 
-*Status: implemented in Stage 1, except token-based history budgeting.*
+*Status: implemented in Stage 1; history is now also bounded by an estimated token budget (2026-11-02). A compact investigation summary outside the transcript remains open.*
 
 | Priority | Evidence in current code | Proposed change |
 | --- | --- | --- |
@@ -64,7 +64,7 @@ environments, independent verification, and persistent investigation state.
 | First | `69e90db:agent.py:272` parses JSON but assumes an object and valid field types. | Validate action names, argument objects, required fields, string sizes, and command types. Return a structured tool error on invalid output. |
 | Next | `69e90db:agent.py:338` and `69e90db:agent.py:355` do not propagate exhaustion or recovered errors into a failing process exit status. | Return explicit outcomes such as completed, exhausted, interrupted, and infrastructure failure; map them to documented exit codes. |
 | Next | `69e90db:agent.py:204` treats every exception as a tool-parser failure. | Classify parser errors, network failures, authentication errors, context overflow, and server errors. Set explicit inference timeouts and bounded retries; remember fallback mode for the applicable session. |
-| Next | `69e90db:agent.py:146` budgets history by message count rather than size. | Budget prompt and response tokens, preserve complete tool exchanges, and maintain a compact investigation summary outside the transcript. |
+| Next | `69e90db:agent.py:146` budgeted history by message count only (now also an estimated token budget). | Budget prompt and response tokens, preserve complete tool exchanges, and maintain a compact investigation summary outside the transcript. |
 
 Do not automatically execute arbitrary fenced shell examples in explanatory
 responses. A structured action envelope is easier to validate. If text fallback
