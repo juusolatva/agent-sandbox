@@ -378,3 +378,15 @@ Additional Stage 3 validation:
 - Validation: unit suite passed; go, rust and cpp images built, prepared and
   checked offline; protected baselines for all three and the 100-start
   sanitizer regression passed.
+
+### 2026-11-02 — sandbox.py command-line tests
+
+- Main's quality gate failed on new-code coverage (78.3% < 80%); nearly all
+  uncovered new lines were sandbox.py argument parsing and dispatch.
+- Added tests/test_sandbox_cli.py: 12 Docker-free tests driving `main()` for
+  build/prepare/check/verify/run and every campaign subcommand with mocked
+  targets, checking forwarded arguments, defaults, parser rejections, exit codes
+  and error mapping. Deliberately dropping `stall_limit` or inverting the resume
+  exit code made them fail.
+- Validation: 63 tests passed (1 skipped) with python313 Docker tests; local
+  coverage sandbox.py 46% -> 84%, total 76% -> 83%.
