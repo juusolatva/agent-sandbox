@@ -66,6 +66,21 @@ class AgentTests(unittest.TestCase):
         _, execute = self.run_loop([message('<bash>true</bash><bash>false</bash>')])
         execute.assert_not_called()
 
+    def test_text_action_whitespace_and_case_are_tolerated(self):
+        outcome, execute = self.run_loop([message('<BASH>\n  true \n</BASH>'),
+                                          message('<Done> Reviewed </Done>')])
+        self.assertEqual(outcome, agent.Outcome.COMPLETED)
+        execute.assert_called_once_with('true')
+
+    def test_unterminated_whitespace_action_is_rejected_quickly(self):
+        # Degenerate model output must not stall the controller in the parser.
+        started = time.monotonic()
+        outcome, execute = self.run_loop([message('<bash>' + ' ' * 20000 + 'x'),
+                                          message('<done>' + '\n' * 20000 + 'x')])
+        self.assertLess(time.monotonic() - started, 1)
+        self.assertEqual(outcome, agent.Outcome.EXHAUSTED)
+        execute.assert_not_called()
+
     def test_api_failure_is_failed_outcome(self):
         outcome, _ = self.run_loop([None])
         self.assertEqual(outcome, agent.Outcome.FAILED)

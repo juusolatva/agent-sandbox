@@ -10,12 +10,11 @@ FROM ${PYTHON_IMAGE} AS base
 # Optional CA secret supports managed build proxies without baking trust into images.
 RUN --mount=type=secret,id=proxy_ca \
     apt-get update && apt-get install -y --no-install-recommends \
-    bash ca-certificates curl git jq procps ripgrep build-essential cmake \
-    ninja-build pkg-config && rm -rf /var/lib/apt/lists/*
-RUN --mount=type=secret,id=proxy_ca \
-    if [ -f /run/secrets/proxy_ca ]; then export PIP_CERT=/run/secrets/proxy_ca; fi; \
-    pip install --no-cache-dir openai==2.6.1
-RUN useradd -m -u 1000 -s /bin/bash agent && \
+    bash build-essential ca-certificates cmake curl git jq ninja-build \
+    pkg-config procps ripgrep && rm -rf /var/lib/apt/lists/* && \
+    if [ -f /run/secrets/proxy_ca ]; then export PIP_CERT=/run/secrets/proxy_ca; fi && \
+    pip install --no-cache-dir --only-binary :all: openai==2.6.1 && \
+    useradd -m -u 1000 -s /bin/bash agent && \
     mkdir -p /home/agent/workspace && chown -R agent:agent /home/agent
 COPY --chmod=444 agent.py /opt/sandbox/agent.py
 RUN chmod 0755 /opt/sandbox
@@ -26,7 +25,7 @@ ENTRYPOINT ["python3", "-u", "/opt/sandbox/agent.py"]
 FROM base AS cpp
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc-12 g++-12 clang-14 clang-tidy-14 llvm-14 libclang-rt-14-dev \
+    clang-14 clang-tidy-14 g++-12 gcc-12 libclang-rt-14-dev llvm-14 \
     && rm -rf /var/lib/apt/lists/*
 USER agent
 

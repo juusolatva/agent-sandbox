@@ -17,8 +17,9 @@ def bundle(content=b'hello\n', name='source.txt', executable=False):
 class TransferTests(unittest.TestCase):
     def test_invalid_paths_are_rejected(self):
         for name in ('../escape', '/absolute', '.venv/attack', 'a/../escape', '.env', './a'):
+            candidate = bundle(name=name)
             with self.subTest(name=name), self.assertRaises(ValueError):
-                controller.transfer.validate(bundle(name=name))
+                controller.transfer.validate(candidate)
 
     def test_export_rejects_symlinks(self):
         with tempfile.TemporaryDirectory() as directory:

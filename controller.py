@@ -79,6 +79,34 @@ class Evidence:
         (self.path / name).write_text(json.dumps(value, indent=2) + '\n')
 
 
+class DeadlineClient:
+    """Minimal chat-completions client that enforces the remaining run deadline."""
+
+    def __init__(self, client, deadline):
+        self.client = client
+        self.deadline = deadline
+        self.chat = self
+        self.completions = self
+
+    def create(self, **kwargs):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('Run deadline exceeded')
+        request_client = self.client.with_options(timeout=min(agent.LLM_TIMEOUT, remaining))
+        return request_client.chat.completions.create(max_tokens=4096, **kwargs)
+
+
+def save_candidate(worker, before, evidence):
+    """Retain the candidate snapshot, its patch, and the changed paths."""
+    candidate = worker.export()
+    transfer.validate(candidate)
+    evidence.save('candidate.json', candidate)
+    patch_data, binary = patch_text(before, candidate)
+    (evidence.path / 'candidate.patch').write_text(patch_data)
+    evidence.save('changes.json', {'paths': sorted(k for k in before.keys() | candidate.keys()
+                  if before.get(k) != candidate.get(k)), 'binary_or_unsupported': binary})
+
+
 def run(record, task, artifact_root, base_url=None, model=None, steps=20, timeout=1800,
         client=None, text_actions=False):
     if steps <= 0 or timeout <= 0:
@@ -123,24 +151,13 @@ def run(record, task, artifact_root, base_url=None, model=None, steps=20, timeou
                 return code == 0, output
 
             def infer(client, model, messages):
-                class DeadlineClient:
-                    def __init__(self):
-                        self.chat = self
-                        self.completions = self
-
-                    def create(self, **kwargs):
-                        remaining = deadline - time.monotonic()
-                        if remaining <= 0:
-                            raise TimeoutError('Run deadline exceeded')
-                        request_client = client.with_options(timeout=min(agent.LLM_TIMEOUT, remaining))
-                        return request_client.chat.completions.create(max_tokens=4096, **kwargs)
-
+                bounded = DeadlineClient(client, deadline)
                 if text_actions:
-                    response = DeadlineClient().create(model=model,
+                    response = bounded.create(model=model,
                         messages=agent.flatten_messages_for_fallback(messages))
                     msg, fallback = response.choices[0].message, True
                 else:
-                    msg, fallback = agent.call_llm_resilient(DeadlineClient(), model, messages)
+                    msg, fallback = agent.call_llm_resilient(bounded, model, messages)
                 if msg is not None:
                     evidence.event({'kind': 'assistant', 'message': msg.model_dump(), 'fallback': fallback})
                 return msg, fallback
@@ -150,13 +167,7 @@ def run(record, task, artifact_root, base_url=None, model=None, steps=20, timeou
                     outcome = agent.run_agent_loop(client, model, task, execute=execute,
                                                    verify=gate, infer=infer, steps=steps)
                 finally:
-                    candidate = worker.export()
-                    transfer.validate(candidate)
-                    evidence.save('candidate.json', candidate)
-                    patch_data, binary = patch_text(before, candidate)
-                    (evidence.path / 'candidate.patch').write_text(patch_data)
-                    evidence.save('changes.json', {'paths': sorted(k for k in before.keys() | candidate.keys()
-                                  if before.get(k) != candidate.get(k)), 'binary_or_unsupported': binary})
+                    save_candidate(worker, before, evidence)
         result['status'] = outcome.name.lower()
     except KeyboardInterrupt:
         outcome = agent.Outcome.INTERRUPTED
