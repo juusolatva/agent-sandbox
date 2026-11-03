@@ -57,6 +57,30 @@ Open:
 - Storage quotas.
 - Optional Stage 4 extensions: automatic reproducer minimization,
   scanner-generated targets, semantic deduplication, and candidate carryover.
+- Controlled external access for models (proposal, not implemented; full internet
+  access for execution containers is explicitly out of scope). Workers stay on
+  `--network none`; the trusted controller would mediate each capability:
+  - SearXNG search (first step). A controller-side `web_search(query)` tool using
+    the operator's SearXNG (`/search?...&format=json`; the JSON API was confirmed to
+    respond at the operator's instance on 2026-11-03). Off by default via a setting
+    such as `SEARCH_URL`; controller mode only. Caveats: queries leave the trust
+    boundary via SearXNG to public engines, so cap query length and searches per run,
+    enable per run or campaign, and log every query and result in run events (also
+    needed for reproducibility); results are untrusted and never used by protected
+    verification; repeated identical searches should count toward stall detection;
+    snippets only, no page fetching at first (a fetch tool would need blocking of
+    private/loopback addresses including after redirects, plus size and type limits).
+  - Search will not fix models trying `pip install`, `go get`, `npm install` or
+    `curl`; check run events for what they attempted. Prefer offline sources
+    (advisory snapshots, `go doc`, `pydoc`, `rustup doc`, man pages).
+  - MCP support. Define one controller tool interface so an MCP client in the
+    controller can later back it. Keep MCP calls in the controller, not in LM Studio,
+    so they can be logged and limited. LM Studio's MCP behavior for API clients is
+    unchecked.
+  - Package manager access (later). A controller-mediated, allowlisted mirror or
+    proxy (for example, a pinned local index) rather than open networking, with
+    logging and a separate decision about whether installs persist into the
+    prepared image.
 
 ## Original assessment
 
