@@ -493,8 +493,8 @@ Additional Stage 3 validation:
   apt/glibc-based Dockerfile and the Python 3.13/3.14 minimums. Snyk scored
   `python:3.16-rc-slim-trixie` at 82 issues (0 critical, 3 high, 1 medium); the exact
   3.13/3.14 trixie tags used here were not scanned by Snyk.
-- Moved the shared base to `python:3.13.18-slim-trixie` and `python:3.14.10-slim-trixie`,
-  pinned by digest (both tags were rebuilt on 2026-11-05, so they do not meet the
+- Moved the shared base to `python:3.13.18-slim-trixie` and `python:3.14.10-slim-trixie`
+  (version tags, matching the other images; both were rebuilt on 2026-11-05, so they do not meet the
   two-week age rule). Clang 14 is not in trixie: the cpp profile now uses Clang 19
   (clang-tidy, compiler-rt, llvm 19); GCC 12 is unchanged. Go, Rust and Node
   toolchains are still copied from bookworm images (glibc 2.36 binaries on 2.41).

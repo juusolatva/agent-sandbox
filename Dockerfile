@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG PYTHON_IMAGE=python:3.13.18-slim-trixie@sha256:09a17cad02668ae61ece136b4fd36ac3849e14f670ebedb637ea3e15580525bc
+ARG PYTHON_IMAGE=python:3.13.18-slim-trixie
 ARG GO_IMAGE=golang:1.27.3-bookworm
 ARG RUST_IMAGE=rust:1.99.1-slim-bookworm
 ARG NODE_IMAGE=node:24.22.1-bookworm-slim
