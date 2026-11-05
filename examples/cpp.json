@@ -3,9 +3,9 @@
   "source": "fixtures/cpp",
   "profile": "cpp",
   "prepare": [],
-  "check": "g++-12 main.cpp -o /tmp/gcc-smoke && /tmp/gcc-smoke && clang++-14 -g -fno-pie -no-pie -fsanitize=address,undefined main.cpp -o /tmp/clang-smoke && /tmp/clang-smoke",
+  "check": "g++-12 main.cpp -o /tmp/gcc-smoke && /tmp/gcc-smoke && clang++-19 -g -fno-pie -no-pie -fsanitize=address,undefined main.cpp -o /tmp/clang-smoke && /tmp/clang-smoke",
   "verification": {
     "source": "verification/cpp",
-    "command": "g++-12 -I /home/agent/workspace /opt/sandbox/verification/check.cpp -o /tmp/check && /tmp/check && clang++-14 -g -fno-pie -no-pie -fsanitize=address,undefined -I /home/agent/workspace /opt/sandbox/verification/check.cpp -o /tmp/check-clang && /tmp/check-clang"
+    "command": "g++-12 -I /home/agent/workspace /opt/sandbox/verification/check.cpp -o /tmp/check && /tmp/check && clang++-19 -g -fno-pie -no-pie -fsanitize=address,undefined -I /home/agent/workspace /opt/sandbox/verification/check.cpp -o /tmp/check-clang && /tmp/check-clang"
   }
 }

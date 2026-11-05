@@ -87,7 +87,7 @@ Manifest resource limits apply to Stage 3 workers as well as baseline checks.
 
 `docker/images.json` lists language targets. Dockerfile defaults select Python
 3.13.18 / 3.14.10, Go 1.27.3, Rust 1.99.1, and Node 24.22.1. C/C++ uses Debian
-Bookworm GCC 12 and Clang 14, including sanitizer runtimes. Builds resolve Debian
+Trixie GCC 12 and Clang 19, including sanitizer runtimes. Builds resolve Debian
 security package updates; rebuilding is not bit-for-bit reproducible. Prepared
 image IDs preserve the actual environment used. Go/Rust/Node sources are copied
 from versioned official images, rather than downloaded by shell installers.
@@ -128,7 +128,7 @@ Installed at image build time (pinned, no network needed to run) and probed by
 
 | Profile | Tools |
 | --- | --- |
-| `cpp` | clang-tidy 14, ASan/UBSan, libFuzzer (`clang++-14 -fsanitize=fuzzer,address`) |
+| `cpp` | clang-tidy 19, ASan/UBSan, libFuzzer (`clang++-19 -fsanitize=fuzzer,address`) |
 | `go` | Staticcheck 2026.2.2 (v0.8.2), `go vet`, native fuzzing (`go test -fuzz`) |
 | `rust` | Clippy, rustfmt |
 | `python313`, `python314` | Ruff 0.17.1, Hypothesis 6.170.1, pytest per project |
