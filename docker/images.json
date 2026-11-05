@@ -1,8 +1,8 @@
 {
-  "cpp": {"target": "cpp", "probe": "gcc-12 --version && clang-14 --version"},
+  "cpp": {"target": "cpp", "probe": "gcc-12 --version && clang-19 --version"},
   "go": {"target": "go", "probe": "go version && staticcheck -version"},
   "rust": {"target": "rust", "probe": "rustc --version && cargo --version"},
-  "python313": {"target": "python", "args": {"PYTHON_IMAGE": "python:3.13.18-slim-bookworm"}, "probe": "python3 --version && ruff --version && python3 -c \"import hypothesis\""},
-  "python314": {"target": "python", "args": {"PYTHON_IMAGE": "python:3.14.10-slim-bookworm"}, "probe": "python3 --version && ruff --version && python3 -c \"import hypothesis\""},
+  "python313": {"target": "python", "args": {"PYTHON_IMAGE": "python:3.13.18-slim-trixie@sha256:09a17cad02668ae61ece136b4fd36ac3849e14f670ebedb637ea3e15580525bc"}, "probe": "python3 --version && ruff --version && python3 -c \"import hypothesis\""},
+  "python314": {"target": "python", "args": {"PYTHON_IMAGE": "python:3.14.10-slim-trixie@sha256:af8a5aa14780025dbfbcfbc81bd8a91ebd87711dd5b0f48ed71090949dd7cb1d"}, "probe": "python3 --version && ruff --version && python3 -c \"import hypothesis\""},
   "node": {"target": "node", "probe": "node --version && npm --version && eslint --version"}
 }

@@ -485,3 +485,20 @@ Additional Stage 3 validation:
   show no measurable benefit; effect on longer investigations of real projects is
   unmeasured. Runs: `artifacts/runs/80e5b28287ae472ab0b3a9c52a2f3616` (record) and
   `77fc9e22a8774675a22a48567735ef5d` (control).
+
+### 2026-11-05 — Debian 13 (trixie) base for Python and C/C++ images
+
+- Snyk's report for `python:3.13.18-slim-bookworm` listed 117 issues (1 critical,
+  5 high); its suggested Alpine/3.16-rc bump (PR #11, closed) would have broken the
+  apt/glibc-based Dockerfile and the Python 3.13/3.14 minimums. Snyk scored
+  `python:3.16-rc-slim-trixie` at 82 issues (0 critical, 3 high, 1 medium); the exact
+  3.13/3.14 trixie tags used here were not scanned by Snyk.
+- Moved the shared base to `python:3.13.18-slim-trixie` and `python:3.14.10-slim-trixie`,
+  pinned by digest (both tags were rebuilt on 2026-11-05, so they do not meet the
+  two-week age rule). Clang 14 is not in trixie: the cpp profile now uses Clang 19
+  (clang-tidy, compiler-rt, llvm 19); GCC 12 is unchanged. Go, Rust and Node
+  toolchains are still copied from bookworm images (glibc 2.36 binaries on 2.41).
+- Validation: rebuilt and probed all six profiles, prepared every fixture with
+  offline baselines, and ran 95 tests with `SANDBOX_DOCKER_TESTS=1` (all passed,
+  including the 100-start sanitizer regression on Clang 19). Remaining Snyk findings
+  were not rescanned; the fixture-only `-fno-pie` flags were kept.

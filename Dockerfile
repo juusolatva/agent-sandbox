@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG PYTHON_IMAGE=python:3.13.18-slim-bookworm
+ARG PYTHON_IMAGE=python:3.13.18-slim-trixie@sha256:09a17cad02668ae61ece136b4fd36ac3849e14f670ebedb637ea3e15580525bc
 ARG GO_IMAGE=golang:1.27.3-bookworm
 ARG RUST_IMAGE=rust:1.99.1-slim-bookworm
 ARG NODE_IMAGE=node:24.22.1-bookworm-slim
@@ -25,7 +25,7 @@ ENTRYPOINT ["python3", "-u", "/opt/sandbox/agent.py"]
 FROM base AS cpp
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    clang-14 clang-tidy-14 g++-12 gcc-12 libclang-rt-14-dev llvm-14 \
+    clang-19 clang-tidy-19 g++-12 gcc-12 libclang-rt-19-dev llvm-19 \
     && rm -rf /var/lib/apt/lists/*
 USER agent
 
@@ -63,7 +63,7 @@ RUN --mount=type=secret,id=proxy_ca \
     npm install --global --ignore-scripts --no-audit --no-fund eslint@10.13.0 && npm cache clean --force
 USER agent
 
-# Build with PYTHON_IMAGE=python:3.14.10-slim-bookworm for the 3.14 environment.
+# Build with PYTHON_IMAGE=python:3.14.10-slim-trixie (see docker/images.json) for the 3.14 environment.
 FROM base AS python
 USER root
 RUN --mount=type=secret,id=proxy_ca \
