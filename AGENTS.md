@@ -502,3 +502,22 @@ Additional Stage 3 validation:
   offline baselines, and ran 95 tests with `SANDBOX_DOCKER_TESTS=1` (all passed,
   including the 100-start sanitizer regression on Clang 19). Remaining Snyk findings
   were not rescanned; the fixture-only `-fno-pie` flags were kept.
+
+### 2026-11-05 — Snyk rescan of the trixie base
+
+- Snyk scanned `python:3.13.18-slim-trixie`: 81 issues (0 critical, 3 high, 1 medium,
+  77 low), down from 117 (1 critical, 5 high, 11 medium, 100 low) on the bookworm base.
+- The remaining high/medium findings are Debian 13 packages with no fix available:
+  zlib1g out-of-bounds write (CVE-2026-76844, CVE-2026-85091; high), libacl1 link
+  following (CVE-2026-54369; high) and TOCTOU (CVE-2026-54370; medium), and libattr1
+  link following (CVE-2026-54371; high). `apt-get update` in the image showed no newer
+  package versions on 2026-11-05; the advisories themselves were not read.
+- Assessment (not measured): zlib is the one to watch because the images handle
+  untrusted inputs, but exploitation would stay inside offline, read-only,
+  capability-dropped containers. The acl/attr findings need an attacker racing
+  filesystem operations inside the container. Snyk lists no known exploit for any.
+- Decision: accept and re-check. Snyk is configured as a passive reporter (no fix PRs,
+  findings not ignored), so they will show as fixed once Debian ships patches. A future
+  failing severity threshold on the Snyk check would block on these until then.
+- Re-check: rebuild images and rescan when Debian updates zlib, acl or attr; do not
+  switch to Alpine for these (it breaks the apt/glibc Dockerfile).
