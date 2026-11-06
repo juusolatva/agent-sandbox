@@ -521,3 +521,18 @@ Additional Stage 3 validation:
   failing severity threshold on the Snyk check would block on these until then.
 - Re-check: rebuild images and rescan when Debian updates zlib, acl or attr; do not
   switch to Alpine for these (it breaks the apt/glibc Dockerfile).
+
+### 2026-11-06 — Repository security policy
+
+- Added the operator-approved root [SECURITY.md](SECURITY.md), defining scope,
+  attacker-controlled inputs, trust boundaries, security invariants, and finding
+  criteria. Distinguished primary offline workers, networked preparation, legacy
+  Compose, and CI; documented known limitations without blanket exclusions.
+- Inventoried policies before drafting: no existing root or nested policies were
+  found. Reviewed execution, transfer, controller, campaign, advisory, and
+  preparation behavior alongside documentation and security-critical test cases.
+- This is policy guidance, not a security audit or implementation change. Existing
+  limitations remain; no new assurance of control effectiveness is claimed.
+- Verification: the policy resolver reports only root SECURITY.md and resolves
+  it for the repository scope. Whitespace checks passed. Runtime tests were not
+  rerun for this documentation-only change; files remain uncommitted.
