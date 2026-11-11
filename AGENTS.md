@@ -548,4 +548,6 @@ Additional Stage 3 validation:
   bind mount depends on `RUNNER_WORKDIR` having the same path on the host and in
   the runner container. Images, volumes and build cache from CI build up on the
   runner host's daemon.
-- Validation: actionlint passed. No workflow has run on the runner yet.
+- `harness.yml` and `languages.yml` now run on pushes to main only, plus pull
+  requests, so PR branches no longer run every job twice on the single runner.
+- Validation: actionlint passed; the first runs on the runner are on PR #14.
