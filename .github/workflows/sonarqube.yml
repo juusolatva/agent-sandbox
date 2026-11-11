@@ -9,7 +9,9 @@ permissions:
 jobs:
   analysis:
     name: SonarQube Cloud analysis
-    runs-on: ubuntu-latest
+    # The runner has the host Docker socket; never run fork pull requests on it.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, vakoilu]
     timeout-minutes: 30
     env:
       # Only a presence flag: the token itself is never exposed to build or test steps.
