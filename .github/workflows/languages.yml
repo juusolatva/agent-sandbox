@@ -4,7 +4,7 @@ permissions:
   contents: read
 jobs:
   smoke:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, vakoilu]
     timeout-minutes: 30
     strategy:
       fail-fast: false

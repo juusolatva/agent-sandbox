@@ -536,3 +536,16 @@ Additional Stage 3 validation:
 - Verification: the policy resolver reports only root SECURITY.md and resolves
   it for the repository scope. Whitespace checks passed. Runtime tests were not
   rerun for this documentation-only change; files remain uncommitted.
+
+### 2026-11-11 — CI moved to the self-hosted runner
+
+- `harness.yml`, `languages.yml` and `sonarqube.yml` now run on
+  `[self-hosted, vakoilu]` (one ephemeral myoung34/github-runner container with 2
+  CPUs and 4 GB). `.github/actionlint.yaml` declares the custom label. OSV-Scanner
+  stays on GitHub-hosted runners because its upstream reusable workflows set
+  `runs-on` themselves.
+- Docker jobs use the host daemon through the mounted socket. The transfer-helper
+  bind mount depends on `RUNNER_WORKDIR` having the same path on the host and in
+  the runner container. Images, volumes and build cache from CI build up on the
+  runner host's daemon.
+- Validation: actionlint passed. No workflow has run on the runner yet.
