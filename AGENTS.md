@@ -557,3 +557,10 @@ Additional Stage 3 validation:
   SonarQube job passed (about 7.5 minutes of serial job time; SonarQube 125 s,
   go 96 s, the rest about a minute or less). The fork skip itself was not
   exercised.
+- After the merge, main's SonarQube quality gate failed on new-code security
+  rating (E) from three open path-traversal issues created 2026-11-02 and never
+  triaged in Sonar: S2083 at `sandbox.py:280` (`--output`), S8707 at
+  `advisories.py:106` (snapshot directory) and `campaign.py:28` (campaign lock
+  directory). Each path comes from the operator's host CLI arguments, which the
+  model cannot invoke. Marked all three False Positive with comments citing
+  SECURITY.md; the gate is now OK.
