@@ -1,12 +1,14 @@
 services:
-  # Bridge proxy: forwards traffic from the offline sandbox network to LM Studio on Windows
-  lm-proxy:
+  # Bridge proxy: forwards traffic from the offline sandbox network to the host inference server
+  llm-proxy:
     # Pinned to a release and digest; update both together after reviewing the new image.
     image: alpine/socat:1.8.1.1@sha256:7f9a06753033f2b7de18edc2353f2c15153413d95a039163c6db270fc7a6c3b0
     restart: unless-stopped
     command: >
       TCP-LISTEN:1234,fork,reuseaddr
-      TCP:${LM_STUDIO_HOST:?Set LM_STUDIO_HOST in .env (see .env.example)}:${LM_STUDIO_PORT:-1234}
+      TCP:${LLM_HOST:-${LM_STUDIO_HOST:?Set LLM_HOST in .env (see .env.example)}}:${LLM_PORT:-${LM_STUDIO_PORT:-1234}}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - sandbox_net
       - host_bridge
@@ -17,16 +19,18 @@ services:
       - no-new-privileges:true
     init: true
 
-  # Isolated LLM Sandbox: NO internet access, can only reach lm-proxy:1234
+  # Isolated LLM Sandbox: NO internet access, can only reach llm-proxy:1234
   sandbox:
     build:
       context: .
       dockerfile: Dockerfile
     depends_on:
-      - lm-proxy
+      - llm-proxy
     environment:
-      - OPENAI_BASE_URL=http://lm-proxy:1234/v1
-      - OPENAI_API_KEY=lm-studio
+      - OPENAI_BASE_URL=http://llm-proxy:1234/v1
+      # Fixed dummy key: this container runs model-chosen commands, so never forward
+      # real credentials into it. Use the host controller for authenticated servers.
+      - OPENAI_API_KEY=local
       - LLM_MODEL=${LLM_MODEL:-}
       - MAX_ITERATIONS=${MAX_ITERATIONS:-20}
       - MAX_HISTORY_MESSAGES=${MAX_HISTORY_MESSAGES:-24}
@@ -64,6 +68,6 @@ networks:
   sandbox_net:
     driver: bridge
     internal: true
-  # Standard bridge used exclusively by lm-proxy to reach the host
+  # Standard bridge used exclusively by llm-proxy to reach the host
   host_bridge:
     driver: bridge

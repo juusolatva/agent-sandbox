@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Hybrid Resilient Sandboxed Agent Loop for LM Studio.
+Hybrid Resilient Sandboxed Agent Loop for OpenAI-compatible inference servers.
 - Uses native OpenAI tool calling for fast, reliable command execution.
-- Falls back to explicit text actions for peg-native parser errors.
+- Falls back to explicit text actions on peg-native parser errors (e.g. LM Studio).
 - Executes validated native tool calls or single explicit XML actions.
 - Supports infinite iterations (MAX_ITERATIONS=0), sliding-window context trimming,
   deterministic completion verification (VERIFY_CMD), and continuous loop mode (CONTINUOUS=1).
@@ -25,8 +25,8 @@ except ModuleNotFoundError as exc:
         raise
     OpenAI = None
 
-BASE_URL = os.environ.get("OPENAI_BASE_URL", "http://lm-proxy:1234/v1")
-API_KEY = os.environ.get("OPENAI_API_KEY", "lm-studio")
+BASE_URL = os.environ.get("OPENAI_BASE_URL", "http://llm-proxy:1234/v1")
+API_KEY = os.environ.get("OPENAI_API_KEY", "local")
 MODEL_ENV = os.environ.get("LLM_MODEL", "").strip()
 MAX_ITERATIONS = int(os.environ.get("MAX_ITERATIONS", "20"))  # 0 = infinite steps
 MAX_HISTORY_MESSAGES = int(os.environ.get("MAX_HISTORY_MESSAGES", "24"))
@@ -113,7 +113,7 @@ def get_active_model() -> str:
     """Return the explicitly configured model; never guess one from the server."""
     if MODEL_ENV:
         return MODEL_ENV
-    print("[!] Set LLM_MODEL to the LM Studio model ID to use.", file=sys.stderr)
+    print("[!] Set LLM_MODEL to the model ID to use.", file=sys.stderr)
     sys.exit(1)
 
 
@@ -377,9 +377,9 @@ def flatten_messages_for_fallback(messages: list[dict]) -> list[dict]:
 
 def call_llm_resilient(client: OpenAI, model: str, messages: list[dict]):
     """
-    Try calling LM Studio with native tools first.
-    If LM Studio's peg-native parser throws a 400/500 error, automatically fall back
-    to tool-free completion with bounded retries.
+    Try calling the inference server with native tools first.
+    If a server's peg-native parser (such as LM Studio) throws a 400/500 error,
+    automatically fall back to tool-free completion with bounded retries.
     """
     try:
         response = client.chat.completions.create(
@@ -525,7 +525,7 @@ def main() -> int:
         raise RuntimeError("Install requirements-controller.txt to use inference")
     client = OpenAI(base_url=BASE_URL, api_key=API_KEY, timeout=LLM_TIMEOUT, max_retries=2)
     model = get_active_model()
-    print(f"[*] Connected to LM Studio via {BASE_URL}")
+    print(f"[*] Connected to inference endpoint {BASE_URL}")
     print(f"[*] Using model: {model}")
 
     if len(sys.argv) > 1:

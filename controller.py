@@ -26,18 +26,15 @@ def connect(base_url=None, model=None, timeout=120):
         raise ValueError('Install requirements-controller.txt in a host virtual environment first')
     if not model:
         raise ValueError('Choose a model explicitly with --model or LLM_MODEL')
-    urls = [base_url] if base_url else ['http://127.0.0.1:1234/v1', 'http://10.0.0.2:1234/v1']
-    errors = []
-    for url in urls:
-        client = agent.OpenAI(base_url=url, api_key=os.environ.get('OPENAI_API_KEY', 'lm-studio'),
-                              timeout=timeout, max_retries=0)
-        try:
-            client.models.list(timeout=min(timeout, 5))
-            return client, model, url
-        except Exception as exc:
-            errors.append(f'{url}: {type(exc).__name__}')
-            client.close()
-    raise ValueError('LM Studio connection failed: ' + '; '.join(errors))
+    url = base_url or 'http://127.0.0.1:1234/v1'
+    client = agent.OpenAI(base_url=url, api_key=os.environ.get('OPENAI_API_KEY', 'local'),
+                          timeout=timeout, max_retries=0)
+    try:
+        client.models.list(timeout=min(timeout, 5))
+        return client, model, url
+    except Exception as exc:
+        client.close()
+        raise ValueError(f'Inference connection failed: {url}: {type(exc).__name__}') from exc
 
 
 def patch_text(before, after):
