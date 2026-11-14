@@ -5,9 +5,7 @@ on:
   pull_request:
 jobs:
   test:
-    # The runner has the host Docker socket; never run fork pull requests on it.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, vakoilu]
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         python: ['3.13', '3.14']
