@@ -8,5 +8,5 @@ services:
     mem_limit: ${PROJECT_MEMORY:-4g}
     pids_limit: 256
     # The project is baked into the image's workspace, so it must stay writable.
-    # Edits are discarded when the container is removed (see STAGE2.md).
+    # Edits are discarded when the container is removed (see README.md).
     read_only: false

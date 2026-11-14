@@ -1,214 +1,419 @@
-# Offline Docker Sandbox for LM Studio (WSL2 + Windows)
+# Agent Sandbox
 
-This setup runs an autonomous local LLM agent loop inside an **offline, locked-down Docker container** in WSL2 while using **LM Studio** running natively on Windows for GPU-accelerated inference.
+Offline, hardened Docker sandbox and host controller for running local-LLM code
+and security investigations across C/C++, Go, Rust, Python, and Node.js.
 
-Stage 2 adds C/C++ (GCC and Clang), Go, Rust, Python 3.13/3.14, and Node.js
-24.22.1 environments. See [language environments and offline preparation](STAGE2.md) (including dated offline dependency advisory checks)
-for project manifests, preparation, smoke checks, and running a prepared project.
-Stage 3 adds a [trusted host controller and protected verification](STAGE3.md),
-with offline command workers and durable evidence/patch export.
-Stage 4 adds [bounded investigation campaigns](STAGE4.md), with persistent target
-selection, untrusted finding proposals, operator review, and reproducer replay.
-Project terminology is defined in the [domain glossary](GLOSSARY.md).
+It works with any OpenAI-compatible inference server (such as LM Studio,
+Ollama, llama.cpp, or vLLM) across Linux, macOS, and Windows/WSL2.
+
+The repository supports two workflows:
+
+1. **Trusted Host Controller & Offline Workers (`sandbox.py`, recommended):**
+   The host controller makes inference requests, executes each model command in
+   a fresh `--network none` worker container with a read-only root filesystem,
+   gates completion on operator-owned protected verification, exports
+   Git-compatible patches and evidence artifacts, and supports bounded
+   multi-target campaigns and offline dependency advisory scans.
+2. **Legacy Docker Compose Mode (`docker-compose.yml`):**
+   Runs `agent.py` inside a workspace container attached to an internal-only
+   Docker network alongside an `llm-proxy` sidecar. Useful for quick interactive
+   sessions in `./workspace`, though with weaker boundaries than `sandbox.py`
+   (see [SECURITY.md](SECURITY.md)).
+
+Project terminology is defined in [GLOSSARY.md](GLOSSARY.md), trust boundaries
+and security invariants in [SECURITY.md](SECURITY.md), and contributor/roadmap
+notes in [AGENTS.md](AGENTS.md).
 
 ---
 
-## Architecture & How Offline Isolation Works
+## Prerequisites
 
-In Docker, setting a network to `internal: true` blocks **all** external routing—including traffic to the host machine (`127.0.0.1` or `10.0.0.2`). To give the sandbox **zero internet or LAN access** while still allowing it to talk to LM Studio, `docker-compose.yml` uses a two-container sidecar architecture:
+- **Docker** with BuildKit and Compose `2.24.4+`
+- **Python 3.13+** on the host (for `sandbox.py`, controller, and tests)
+- **Host controller dependencies** (required for `sandbox.py run` and
+  `sandbox.py campaign resume`):
+  ```bash
+  python3 -m venv .venv
+  .venv/bin/python -m pip install -r requirements-controller.txt
+  ```
+- **Optional:** [OSV-Scanner](https://google.github.io/osv-scanner/) `2.x` on
+  `PATH` for offline dependency advisory scanning (`sandbox.py advisories scan`)
+- An OpenAI-compatible inference server serving a local chat/coding model
 
+### Supported Language Profiles & Minimum Runtimes
+
+`docker/images.json` and `Dockerfile` pin six language worker profiles:
+
+| Profile | Pinned Toolchain | Pre-installed Offline Analysis Tools |
+| :--- | :--- | :--- |
+| `cpp` | GCC 12, Clang 19 (Debian Trixie) | `clang-tidy-19`, ASan/UBSan, libFuzzer |
+| `go` | Go 1.27.3 | `Staticcheck v0.8.2`, `go vet`, `go test -fuzz` |
+| `rust` | Rust 1.99.1 | `clippy`, `rustfmt` |
+| `python313` | Python 3.13.18 | `Ruff 0.17.1`, `Hypothesis 6.170.1` |
+| `python314` | Python 3.14.10 | `Ruff 0.17.1`, `Hypothesis 6.170.1` |
+| `node` | Node.js 24.22.1 | `ESLint 10.13.0` |
+
+Bundled example projects declare minimum toolchains: Node.js `>=24.22.1`
+(`engines`), Go `1.26` (`go` directive), and Rust `1.88` (`rust-version`). Go
+and Cargo refuse older toolchains; npm only warns about `engines` by default.
+
+> **Not installed for offline use:** `govulncheck`, `cargo-audit`, and
+> `pip-audit` require separate ecosystem-specific offline mirrors (use
+> `sandbox.py advisories` instead); `cargo-fuzz` requires nightly Rust.
+
+---
+
+## 1. Language Environments & Offline Preparation
+
+`sandbox.py` builds language worker images, snapshots project source, runs
+dependency preparation while networked, and verifies that the project builds and
+passes its baseline checks with `--network none` before saving a prepared state
+JSON.
+
+### Try a Bundled Fixture
+
+```bash
+python3 sandbox.py build python313
+python3 sandbox.py prepare examples/python313.json --state artifacts/python313.json
+python3 sandbox.py check artifacts/python313.json
 ```
+
+Repeat with `cpp`, `go`, `rust`, `python314`, or `node` and the matching file in
+`examples/`. Each `build` probes the toolchain with networking disabled. `check`
+replays the prepared image snapshot rather than later edits in your host checkout;
+re-run `prepare` after updating source or verification checks.
+
+### Configure a Target Project Manifest
+
+Copy an example manifest and set `source` and `verification.source` relative to
+the manifest's directory:
+
+```json
+{
+  "name": "my-python-project",
+  "source": "../../my-project",
+  "profile": "python314",
+  "prepare": [
+    "python3 -m venv .venv",
+    ".venv/bin/python -m pip install --require-hashes -r requirements.lock"
+  ],
+  "check": ".venv/bin/python -m pytest -q",
+  "verification": {
+    "source": "verification/my-project",
+    "command": "python3 -I /opt/sandbox/verification/check.py"
+  },
+  "memory": "4g",
+  "cpus": 2,
+  "pids": 256,
+  "timeout": 600
+}
+```
+
+- `prepare` commands run in separate `bash -e` processes. Files persist between
+  steps; shell variables and activated environments do not (use absolute or
+  workspace-relative executable paths).
+- Typical per-language offline prep:
+  - **Go:** `go mod download`; offline check `GOPROXY=off go test -mod=readonly ./...` (`GOTOOLCHAIN=local` is set in the image).
+  - **Rust:** commit `Cargo.lock`, run `cargo fetch --locked`; check `cargo test --frozen`.
+  - **Node:** commit `package-lock.json`, run `npm ci`; test `npm ci --offline` if lock reconstruction is needed.
+  - **Python:** create `.venv` and install pinned/hashed dependencies including test runners and build backends.
+  - **C/C++:** fetch third-party inputs, submodules, or CMake downloads during `prepare` so offline builds stay local.
+- **Snapshot exclusions:** `.git`, `.env*`, common credential files/directories
+  (`.ssh`, `.aws`, `.npmrc`, `.pypirc`, `.netrc`, `.codex`, `.agents`), and build
+  caches (`__pycache__`, `.venv`, `node_modules`, `target`, `artifacts`) are
+  excluded, and external symlinks are rejected. Always inspect the target source
+  directory first; exclusions do not detect secrets embedded in source files.
+  Prepared images are local artifacts containing source and dependencies—do not
+  publish them without review.
+- **Managed proxy CAs:** pass `--ca /path/to/combined-ca.pem` to `build` or
+  `prepare` to mount an extra CA trust bundle as a BuildKit secret (it is never
+  copied into the image).
+- **C++ ASan/PIE note:** In some high-entropy ASLR environments, older ASan PIE
+  executables can hit an allocator/ASLR address conflict (see LLVM
+  [D147984](https://reviews.llvm.org/D147984)). The bundled C++ fixture passes
+  `-fno-pie -no-pie` on its sanitizer check binary; for real projects requiring
+  PIE, prefer a toolchain/runtime with the allocator fix.
+
+### Protected Verification
+
+The optional (but required for `sandbox.py run`) `verification` section copies
+operator-owned checks into `/opt/sandbox/verification` as root-owned files inside
+the image. During verification, the root filesystem and `/home/agent` workspace
+are read-only; emit build artifacts and caches to `/tmp` (`HOME`, `GOCACHE`, and
+`CARGO_TARGET_DIR` point to `/tmp`, while `GOPATH` and `CARGO_HOME` retain
+prepared dependencies).
+
+Preparation requires both the workspace `check` and protected `verification`
+baselines to pass before saving the state JSON. Keep critical assertions in the
+protected verification directory so edits to mutable workspace tests cannot
+falsely satisfy completion.
+
+### Offline Dependency Advisory Checks
+
+Advisory snapshots are fetched while networked and scanned offline on the host
+(snapshots are never baked into images or exposed to workers):
+
+```bash
+python3 sandbox.py advisories fetch artifacts/advisories
+python3 sandbox.py advisories fetch artifacts/advisories --ecosystem Go --ecosystem crates.io
+python3 sandbox.py advisories scan artifacts/go.json artifacts/advisories \
+  --output artifacts/go-advisories.json
+```
+
+`fetch` downloads OSV ecosystem databases (`Go`, `PyPI`, `crates.io`, `npm`) and
+writes SHA-256/size/timestamp metadata last. `scan` extracts recognized lockfiles
+(`go.mod`, `Cargo.lock`, `package-lock.json`, `requirements*.txt`, `poetry.lock`,
+`uv.lock`, `Pipfile.lock`) from the prepared image with networking disabled,
+verifies snapshot hashes and `--max-age-days` (default `7`), and runs
+`osv-scanner --offline --offline-vulnerabilities`.
+
+Exit codes: `0` clean, `1` known advisories found, `2` check incomplete
+(missing database, missing lockfiles, tampered/stale snapshot, or scanner
+failure—never reported as clean). Matching lockfile versions to OSV advisories
+does not analyze reachability or establish that code is safe.
+
+---
+
+## 2. Isolated Investigation Runs (`sandbox.py run`)
+
+```bash
+.venv/bin/python sandbox.py run artifacts/python313.json \
+  "Investigate one area and retain a reproducer or precise evidence." \
+  --model your-model-id --steps 20 --timeout 1800
+```
+
+- **Endpoint & model selection:** The controller connects to `--base-url` or
+  `OPENAI_BASE_URL`, defaulting to `http://127.0.0.1:1234/v1`. Model selection
+  is required (`--model` or `LLM_MODEL`). Pass `OPENAI_API_KEY` if your server
+  requires authentication (consumed only on the host, never passed to workers).
+- **Resilient tool calling:** `agent.py` uses native OpenAI tool calling
+  (`run_bash`, `finish_task`) first. If a server returns a `peg-native` grammar
+  parser error (seen with some local models in LM Studio), it falls back to
+  single explicit XML actions (`<bash>...</bash>`, `<done>...</done>`) with
+  bounded retries. Pass `--text-actions` to skip native tools from the start.
+  Ordinary prose, reasoning text, and Markdown code fences are never executed.
+- **Worker isolation:** Each model command runs in a fresh container with
+  `--network none`, dropped capabilities, `no-new-privileges:true`, a read-only
+  root filesystem, executable `/tmp` tmpfs, CPU/memory/PID limits from the
+  manifest, and a run-specific home volume removed at the end of the run.
+  Container cleanup also kills detached background descendants on exit, timeout,
+  or interrupt.
+- **Protected acceptance:** Completion is accepted only after an explicit
+  `finish_task`/`<done>` action **and** a passing protected verification run in a
+  separate fresh verifier container against pristine dependencies and read-only
+  candidate source.
+
+### Retained Run Artifacts & Patch Review
+
+Each run writes controller-owned artifacts under `artifacts/runs/<run-id>/`
+(override with `--artifacts`):
+
+- `input.json` and `result.json`: prepared identity, task, configuration,
+  model, endpoint, outcome, and baseline/candidate verification states.
+- `events.jsonl`: validated command results and assistant action messages.
+- `controller.log`: bounded execution and loop diagnostics.
+- `original.json` and `candidate.json`: regular-file source snapshots
+  (transfer limits: regular files only, max `5,000` files / `16 MiB`; symlinks,
+  special files, caches, and credential paths are excluded or rejected).
+- `candidate.patch` and `changes.json`: Git-compatible text/binary/mode diff and
+  changed paths.
+
+Put reproducers or notes you want retained in a regular directory such as
+`evidence/`. Candidate outputs are untrusted evidence and are never applied
+automatically. To independently replay a candidate or test a patch:
+
+```bash
+python3 sandbox.py verify artifacts/python313.json \
+  --candidate artifacts/runs/RUN_ID/candidate.json
+
+git apply --check artifacts/runs/RUN_ID/candidate.patch
+```
+
+Note that `original.json` includes files generated during `prepare` (such as
+lockfiles), so compare against the recorded `source_hash`.
+
+---
+
+## 3. Bounded Investigation Campaigns (`sandbox.py campaign`)
+
+Campaigns manage persistent target queues, retry/stall limits, untrusted
+finding proposals, operator review, and fresh-worker reproducer replay.
+
+Create an operator-authored `targets.json` (array of task strings or objects):
+
+```json
+[
+  {"task": "Investigate length handling", "scope": "src/parser.c:decode", "priority": 10},
+  {"task": "Investigate error cleanup", "scope": "src/io.c", "priority": 0}
+]
+```
+
+Create, run, and inspect a campaign:
+
+```bash
+python3 sandbox.py campaign create artifacts/my-campaign artifacts/my-project.json targets.json
+.venv/bin/python sandbox.py campaign resume artifacts/my-campaign \
+  --max-runs 3 --steps 20 --timeout 1800 --budget 3600 \
+  --continue-on-failure --model your-model-id
+python3 sandbox.py campaign status artifacts/my-campaign
+```
+
+- **Scheduling & budgets:** Targets are ordered by fewest attempts, descending
+  `priority`, and input order. Duplicate `(task, scope)` pairs are queued once.
+  `--max-attempts` defaults to `3`; `--stall-limit` defaults to `2` successive
+  unsuccessful attempts with unchanged candidate snapshots (excluding report
+  wording), and `3` identical command/result digests inside a run also mark a
+  target stalled.
+- **State integrity & outcomes:** Writes are atomic and locked (`flock`). Version
+  2 campaigns pin the canonical SHA-256 of `prepared.json` and reject state
+  changes. `campaign resume` exits `0` only on `all_completed`; other stop
+  reasons (`run_limit`, `time_budget`, `attempt_*`, `interrupted`,
+  `no_eligible_targets`) exit `1`. Clean completion or a `no_finding` report is
+  not a security verdict.
+
+### Finding Proposals, Review, and Reproducer Replay
+
+Campaign prompts instruct the agent to write `investigation-findings.json`
+(capped at `64 KiB` and `100` findings, with `disposition` in
+`finding | no_finding | blocked`). After each run, the controller imports the
+report into `proposals.json` with forced `suspected` status and controller-owned
+evidence references, grouping identical `(location, root_cause)` pairs without
+trusting model-supplied statuses or host paths.
+
+Record an operator review decision (appends to `findings.json`) or an operator
+finding manually:
+
+```bash
+python3 sandbox.py campaign review artifacts/my-campaign 0 0 0 --status confirmed
+python3 sandbox.py campaign finding artifacts/my-campaign finding.json
+```
+
+Supported statuses: `confirmed`, `suspected`, `rejected`, `blocked`,
+`no_finding`. Manual `finding.json` files must link existing relative paths under
+the campaign's `runs/` directory.
+
+To replay an operator-owned reproducer script against both `original.json` and
+`candidate.json` in separate fresh offline workers:
+
+```bash
+python3 sandbox.py campaign replay artifacts/my-campaign runs/0/ATTEMPT/RUN reproducer.sh --timeout 600
+```
+
+Reports saved under `runs/replays/` record command text, snapshot hashes, exit
+codes, and bounded diagnostics (`failure_then_pass` marks a nonzero non-timeout
+original exit followed by exit `0` on candidate).
+
+---
+
+## 4. Legacy Docker Compose Mode
+
+For quick single-container sessions backed by a host `./workspace` bind mount,
+`docker-compose.yml` uses a two-container sidecar architecture so the sandbox
+has zero internet or LAN access while still reaching your local inference
+server:
+
+```text
 ┌─────────────────────────────────────────┐
-│          sandbox (llm-sandbox)          │
-│  • Runs agent.py as non-root (UID 1000) │
+│          sandbox (non-root UID 1000)    │
+│  • Runs agent.py inside container       │
 │  • Attached ONLY to `sandbox_net`       │
-│  • NO internet or LAN access            │
-│  • Mounts ./workspace                   │
+│  • Mounts ./workspace (rw), agent.py(ro)│
 └───────────────────┬─────────────────────┘
-                    │ http://lm-proxy:1234/v1
+                    │ http://llm-proxy:1234/v1
                     ▼  (sandbox_net: internal=true)
 ┌─────────────────────────────────────────┐
-│         lm-proxy (alpine/socat)         │
+│         llm-proxy (alpine/socat)        │
 │  • Attached to `sandbox_net`            │
 │    AND `host_bridge`                    │
-│  • Forwards TCP 1234 -> 10.0.0.2:1234   │
+│  • Forwards TCP 1234 -> LLM_HOST:PORT   │
 └───────────────────┬─────────────────────┘
-                    │ TCP 10.0.0.2:1234
-                    ▼  (WSL2 mirrored network)
+                    │
+                    ▼
 ┌─────────────────────────────────────────┐
-│       LM Studio (Windows Host)          │
-│  • Serving on Local Network (:1234)     │
+│   OpenAI-compatible inference server    │
+│   (e.g., LM Studio / Ollama / llama.cpp)│
 └─────────────────────────────────────────┘
 ```
 
-### Why `10.0.0.2` Instead of `host.docker.internal`?
-In WSL2 with `networkingMode=mirrored`, Windows mirrors its physical/virtual host interfaces (`127.0.0.1` and `10.0.0.2`), **not** the Linux-only `docker0` bridge (`172.17.0.1`) that `host.docker.internal` resolves to. Pointing `lm-proxy` to `10.0.0.2:1234` routes traffic directly to LM Studio on Windows.
+### Quick Start (Compose)
 
-### Sandbox Hardening
-The `sandbox` service in `docker-compose.yml` enforces:
-- **Network isolation:** Attached exclusively to `sandbox_net` (`internal: true`).
-- **Read-only harness:** `agent.py` is mounted `:ro` so the LLM cannot modify its own control loop.
-- **Dropped capabilities:** `cap_drop: [ALL]` and `security_opt: ["no-new-privileges:true"]`.
-- **Resource limits:** Capped at `2.0` CPUs, `2g` RAM, and `pids_limit: 128` (prevents fork bombs).
-- **Command timeouts & truncation:** Every bash command has a timeout (default `30s`) and merged stdout/stderr is drained with at most `8000` bytes retained so runaway output cannot blow up the LLM's context window.
-
----
-
-## Hybrid Resilient Tool Calling (Why It Doesn't Crash)
-
-LM Studio's OpenAI server uses a strict internal grammar parser (`peg-native`) when `tools=[...]` is passed. Many local models (including `openai/gpt-oss-20b`, Qwen, and Gemma) occasionally deviate slightly from that grammar when finishing a task, causing LM Studio to return an HTTP `400`/`500` error (`The model produced output that does not match the expected peg-native format`).
-
-`agent.py` solves this automatically via `call_llm_resilient`:
-1. **Primary Mode (Native OpenAI Tools):** Calls LM Studio with `run_bash` and `finish_task` tools for fast, structured execution.
-2. **Automatic Fallback (Plain-Text Mode):** If LM Studio throws a `peg-native` parser error, `agent.py` catches it, flattens the conversation history, and immediately retries the request *without* the `tools` parameter with bounded retries.
-3. **Multi-Format Parsing:** Understands native `tool_calls`, `<bash>...</bash>` and `<done>...</done>` XML tags, as single explicit actions. Prose, reasoning text, and Markdown fences are not executed.
-
----
-
-## Quick Start
-
-### 1. Prerequisites
-Host-side tools (`sandbox.py`, the controller and tests) require Python 3.13 or
-newer. Bundled example projects declare their minimum toolchains: Node.js
-24.22.1 (`engines`), Go 1.26 (`go` directive) and Rust 1.88 (`rust-version`).
-The images pin Node.js 24.22.1, Go 1.27.3 and Rust 1.99.1. Go and Cargo refuse
-older toolchains; npm only warns about `engines` by default.
-
-1. In **LM Studio (Windows)**, load a chat/coding model and enable **Serve on Local Network** on port `1234`.
-2. Create your settings file and set `LM_STUDIO_HOST` and `LLM_MODEL` (both are required):
+1. Start your OpenAI-compatible inference server on the host (listening on port
+   `1234` by default, bound to an address reachable from Docker).
+2. Create `.env` from `.env.example` and set `LLM_HOST` and `LLM_MODEL`:
    ```bash
    cp .env.example .env
    ```
-3. Build the sandbox image once in WSL2:
+   - `LLM_HOST=host.docker.internal` works out of the box on Docker Desktop
+     (macOS/Windows) and Linux Docker Engine (via `extra_hosts: host-gateway`).
+   - In mirrored-network setups (such as WSL2 `networkingMode=mirrored`), set
+     `LLM_HOST` to your host or mirrored gateway IP if `host.docker.internal`
+     is unreachable.
+3. Build and run:
    ```bash
    docker compose build
+   docker compose run --rm sandbox                          # interactive prompt
+   docker compose run --rm sandbox "Create hello.py"        # single task
+   LLM_MODEL="your-model-id" docker compose run --rm sandbox "Refactor app.py"
    ```
 
-### 2. Interactive Mode
-Opens a prompt where you can type tasks one after another:
-```bash
-docker compose run --rm sandbox
-```
+Files created inside `/home/agent/workspace` appear in `./workspace/` on the
+host. (For a legacy Compose run against a prepared image where edits are
+discarded on exit, combine `docker-compose.yml` with
+`docker-compose.prepared.yml` via `PREPARED_IMAGE`.)
 
-### 3. Single-Task Mode
-Pass the task directly on the command line; the container runs until the task completes and then exits:
-```bash
-docker compose run --rm sandbox "Create a Python script that generates the first 50 prime numbers and save them to primes.txt"
-```
+### Compose Stopping Modes & Context Protection
 
-### 4. Choosing a Specific Model
-`agent.py` requires an explicit model and no longer picks one from LM Studio. Set `LLM_MODEL`:
-```bash
-LLM_MODEL="qwen/qwen2.5-coder-14b" docker compose run --rm sandbox "Refactor the scripts in this folder"
-```
+- **Verification gate (`VERIFY_CMD`):** Runs inside the `sandbox` container when
+  the agent tries to finish; nonzero exit rejects completion and returns
+  output to the model.
+- **Unbounded step count (`MAX_ITERATIONS=0`):** Removes the default `20`-step
+  limit until completion or `VERIFY_CMD` succeeds.
+- **Continuous loop (`CONTINUOUS=1`):** Restarts with a fresh context after each
+  completed cycle (stops on failed or exhausted cycles).
+- **Context window protection:** `agent.py` trims history using a sliding
+  message window (`MAX_HISTORY_MESSAGES=24`) and an estimated token budget
+  (`MAX_CONTEXT_TOKENS=12000`, ~3 chars/token), keeping complete tool exchanges.
+  Trimmed steps are condensed deterministically by the harness into a bounded
+  record (`MAX_SUMMARY_CHARS=3000`, `0` disables) labeled as untrusted program
+  output and appended to the task prompt view. Set `MAX_CONTEXT_TOKENS` below
+  your loaded model context length with margin for tool schemas.
 
----
-
-## Getting Results In and Out of the Sandbox
-
-The container's `/home/agent/workspace` directory is bind-mounted directly to `./workspace` on your WSL2 host:
-```yaml
-volumes:
-  - ./workspace:/home/agent/workspace
-```
-- **Extracting outputs:** Any file the LLM writes inside `/home/agent/workspace` (e.g., `workspace/hello.sh`, reports, generated code, SQLite databases) is immediately available in `~/util/sandbox/workspace/` on your host machine.
-- **Providing inputs:** Drop source code, datasets, or prompt instructions into `~/util/sandbox/workspace/` on your host machine and they are immediately accessible to the LLM inside `/home/agent/workspace`.
-
----
-
-## Stopping Conditions: How Does the Agent Know When to Stop?
-
-You have two ways to control when the loop stops:
-
-### 1. LLM Self-Reporting (Default)
-The LLM inspects the exit codes and `stdout`/`stderr` of its commands and calls `finish_task` (or outputs `<done>...</done>`) when it believes the goal is satisfied.
-
-### 2. Deterministic Verification Gate (`VERIFY_CMD`)
-Local LLMs can sometimes declare victory prematurely before tests pass. Setting `VERIFY_CMD` enforces an external bash check inside the sandbox **every time** the LLM tries to finish:
-- If `VERIFY_CMD` exits with code `0`, the loop accepts completion and stops.
-- If `VERIFY_CMD` exits with a non-zero code, the harness **rejects** completion, feeds the test/check failure output back to the LLM, and forces it to keep iterating until the check passes.
-
-**Example — Run until `pytest` passes:**
-```bash
-VERIFY_CMD="pytest -q" docker compose run --rm sandbox \
-  "Write a calculator module in calc.py and a test suite in test_calc.py"
-```
-
-**Example — Run until an output file exists and has at least 10 lines:**
-```bash
-VERIFY_CMD="test -f results.txt && [ \$(wc -l < results.txt) -ge 10 ]" \
-  docker compose run --rm sandbox \
-  "Generate 10 unique system administration tips into results.txt"
-```
-
----
-
-## Running in an Infinite Loop
-
-There are two ways to run the sandbox in an infinite loop depending on your goal:
-
-### Mode A: Infinite Steps Until Task Completes (`MAX_ITERATIONS=0`)
-By default, a task stops after `20` steps (`MAX_ITERATIONS=20`). Setting `MAX_ITERATIONS=0` removes the step limit so the agent keeps working indefinitely until the task (and optional `VERIFY_CMD`) succeeds:
-
-```bash
-MAX_ITERATIONS=0 VERIFY_CMD="./run_tests.sh" docker compose run --rm sandbox \
-  "Fix all bugs in app.py until ./run_tests.sh passes"
-```
-
-> **Context Window Protection:** To reduce history growth, `agent.py` automatically trims the message history using a sliding window (`MAX_HISTORY_MESSAGES=24`) and an estimated token budget (`MAX_CONTEXT_TOKENS=12000`, about 3 characters per token), preserving the system prompt, original task, and recent complete exchanges. Steps that leave the window are condensed by the harness (not the model) into a bounded record of each command, its exit status and first/last output lines (`MAX_SUMMARY_CHARS=3000`, `0` disables), which is shown with the task on every later turn; excerpts are marked as untrusted program output, and older entries are dropped with a count once the record is full. The estimate is approximate and does not count the tool schema, and the newest message is always kept, so set the budget below your model's loaded context length with margin.
-
-### Mode B: Continuous Autonomous Loop (`CONTINUOUS=1`)
-If you want the agent to run **forever** in a loop—restarting with a fresh context window after each completed cycle (useful for fuzzing, continuous code improvement, generating synthetic data, or polling a task queue in `./workspace`)—set `CONTINUOUS=1`:
-
-```bash
-CONTINUOUS=1 MAX_ITERATIONS=30 docker compose run --rm sandbox \
-  "Read TODO.md in the workspace, pick the next unfinished item, implement and test it, mark it done in TODO.md, and finish."
-```
-
-To run it in the background as a daemon and watch its logs:
-```bash
-CONTINUOUS=1 docker compose run -d --name agent-daemon sandbox \
-  "Continuously generate new unit test edge cases in test_suite.py and verify they pass."
-
-# Watch live logs
-docker logs -f agent-daemon
-
-# Stop the infinite daemon when done
-docker stop agent-daemon && docker rm agent-daemon
-```
-
----
-
-## Configuration Reference (Environment Variables)
-
-All settings can be passed on the command line or configured in a `.env` file next to `docker-compose.yml` (copy `.env.example` to start):
+### Configuration Reference
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `LM_STUDIO_HOST` | *(required)* | IP/hostname used by `lm-proxy` to reach LM Studio on Windows; `.env.example` uses the tested `10.0.0.2` |
-| `LM_STUDIO_PORT` | `1234` | Port where LM Studio's Local Inference Server is listening |
-| `LLM_MODEL` | *(required)* | Model ID in LM Studio (e.g., `openai/gpt-oss-20b`, `qwen/qwen2.5-coder-14b`) |
-| `MAX_ITERATIONS` | `20` | Maximum steps per task (`0` = infinite steps) |
+| `LLM_HOST` | *(required in Compose)* | Host/IP used by `llm-proxy` (falls back to `LM_STUDIO_HOST` if set) |
+| `LLM_PORT` | `1234` | Port of the inference server (falls back to `LM_STUDIO_PORT` if set) |
+| `LLM_MODEL` | *(required)* | Model ID served by the inference endpoint |
+| `OPENAI_BASE_URL` | `http://llm-proxy:1234/v1` (Compose) / `http://127.0.0.1:1234/v1` (controller) | Override inference API base URL |
+| `OPENAI_API_KEY` | `local` | API key for the inference endpoint |
+| `MAX_ITERATIONS` | `20` | Max steps per task (`0` = unlimited) |
 | `MAX_HISTORY_MESSAGES` | `24` | Sliding window size in messages (`0` disables) |
-| `MAX_CONTEXT_TOKENS` | `12000` | Estimated prompt-token budget for retained history (`0` disables) |
-| `MAX_SUMMARY_CHARS` | `3000` | Cap on the condensed record of trimmed-away steps (`0` disables) |
-| `COMMAND_TIMEOUT` | `30` | Maximum seconds a single bash command can run before being killed |
-| `VERIFY_CMD` | *(empty)* | Optional bash command that must exit `0` before the agent is allowed to finish |
-| `CONTINUOUS` | `0` | Set to `1` to restart the task in an infinite cycle (`while True`) |
+| `MAX_CONTEXT_TOKENS` | `12000` | Estimated prompt-token budget (`0` disables) |
+| `MAX_SUMMARY_CHARS` | `3000` | Condensed record cap for trimmed steps (`0` disables) |
+| `COMMAND_TIMEOUT` | `30` | Timeout in seconds per shell command (`agent.py`) |
+| `LLM_TIMEOUT` | `120` | Timeout in seconds per inference API call |
+| `VERIFY_CMD` | *(empty)* | Legacy Compose bash check required before completion |
+| `CONTINUOUS` | `0` | Set to `1` to repeat completed cycles (`agent.py`) |
+| `WORKSPACE` | `/home/agent/workspace` | Working directory override when running `agent.py` directly |
 
+Single-task exit codes for `agent.py`: `0` completed, `1` failed, `2` iteration
+limit exhausted, `130` interrupted.
 
-## Stage 1: harness reliability
+---
 
-Run the regression checks without installing an SDK or starting LM Studio:
+## Testing & Coverage
+
+Run the standard-library unit and subprocess regression suite (requires no
+inference server or Docker):
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
-The SonarQube workflow (`.github/workflows/sonarqube.yml`) builds and prepares
-the `python313` profile, runs the full suite including Docker boundary tests
-under `coverage`, and uploads `coverage.xml` to SonarQube Cloud. To reproduce
-the coverage report locally (coverage settings live in `pyproject.toml`):
+Run the full suite including Docker isolation boundary tests and coverage
+reporting (matches `.github/workflows/sonarqube.yml`, using `coverage` settings
+in `pyproject.toml`):
 
 ```bash
 python3 -m pip install --only-binary :all: coverage==7.16.2
@@ -219,27 +424,17 @@ python3 -m coverage xml
 python3 -m coverage report
 ```
 
-Completion now requires a valid `finish_task` call or a single `<done>` action.
-Text fallback commands must be a single `<bash>` action. Invalid tool arguments
-are returned to the model as errors. Reasoning content and fenced examples are
-never executed. Parser fallback is limited to errors mentioning `peg-native`;
-other inference errors fail the run after the SDK's bounded retries.
+To run all six language baseline and sanitizer integration checks:
 
-Commands drain merged stdout/stderr into a bounded buffer and kill their process
-group when they finish, time out, or are interrupted. Background work cannot be
-kept between commands. Programs deliberately detaching into a new session still
-require the planned worker-container boundary for complete cleanup.
+```bash
+for profile in cpp go rust python313 python314 node; do
+  python3 sandbox.py build "$profile"
+  python3 sandbox.py prepare "examples/${profile}.json" --state "artifacts/${profile}.json"
+done
+SANDBOX_DOCKER_TESTS=1 python3 -m unittest discover -s tests -v
+```
 
-Single-task exit codes are `0` completed, `1` failed, `2` iteration limit, and
-`130` interrupted. Continuous mode proceeds only after a completed cycle; failed
-or exhausted cycles stop with a nonzero exit code. `LLM_TIMEOUT` defaults to 120
-seconds per API request (with at most two SDK retries). `WORKSPACE` can override
-the working directory when running the harness directly outside Compose.
-
-`VERIFY_CMD` still runs in the agent's container and can reference writable
-project files. Independent protected verification, language images, offline
-preparation, and persistent investigation state remain later stages; see
-[the implementation proposal](IMPROVEMENTS.md) and [progress](AGENTS.md).
+---
 
 ## License
 

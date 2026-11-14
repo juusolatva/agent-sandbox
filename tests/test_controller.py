@@ -89,13 +89,24 @@ class TransferTests(unittest.TestCase):
         self.assertEqual(digests[0][0], digests[1][0])
         self.assertNotEqual(digests[0][1], digests[1][1])
 
-    def test_connection_falls_back_to_supplied_host(self):
+    def test_connection_defaults_to_loopback_and_closes_on_failure(self):
         from unittest.mock import Mock
-        first, second = Mock(), Mock()
-        first.models.list.side_effect = ConnectionError('unavailable')
-        with patch.object(controller.agent, 'OpenAI', side_effect=[first, second]) as sdk:
-            client, model, url = controller.connect(model='google/gemma-4-12b')
-        self.assertIs(client, second)
-        self.assertEqual(url, 'http://10.0.0.2:1234/v1')
-        self.assertEqual(sdk.call_args_list[0].kwargs['base_url'], 'http://127.0.0.1:1234/v1')
-        first.close.assert_called_once()
+        client_ok = Mock()
+        with patch.object(controller.agent, 'OpenAI', return_value=client_ok) as sdk:
+            client, model, url = controller.connect(model='example/model')
+        self.assertIs(client, client_ok)
+        self.assertEqual(model, 'example/model')
+        self.assertEqual(url, 'http://127.0.0.1:1234/v1')
+        self.assertEqual(sdk.call_args.kwargs['base_url'], 'http://127.0.0.1:1234/v1')
+
+        with patch.object(controller.agent, 'OpenAI', return_value=client_ok) as sdk:
+            _, _, url = controller.connect(base_url='http://127.0.0.1:8080/v1', model='example/model')
+        self.assertEqual(url, 'http://127.0.0.1:8080/v1')
+        self.assertEqual(sdk.call_args.kwargs['base_url'], 'http://127.0.0.1:8080/v1')
+
+        failing = Mock()
+        failing.models.list.side_effect = ConnectionError('unavailable')
+        with patch.object(controller.agent, 'OpenAI', return_value=failing), \
+             self.assertRaises(ValueError):
+            controller.connect(model='example/model')
+        failing.close.assert_called_once()

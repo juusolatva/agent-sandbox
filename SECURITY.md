@@ -78,7 +78,7 @@ are absent. Protected tests cannot prove correctness or defeat every deliberatel
 test-aware program. Legacy Compose shares command and inference trust boundaries;
 its prepared override also permits a writable container root filesystem.
 
-The controller supports plaintext HTTP, including a LAN fallback. Older version
-1 campaigns lack prepared-state integrity checks. These limitations are not
-blanket exclusions. The recorded decision to monitor unresolved base-image CVEs
+The controller supports plaintext HTTP when pointed at a local or operator-specified
+endpoint. Older version 1 campaigns lack prepared-state integrity checks. These limitations
+are not blanket exclusions. The recorded decision to monitor unresolved base-image CVEs
 does not suppress new evidence of exploitability or impact.
