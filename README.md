@@ -220,17 +220,22 @@ Each run writes controller-owned artifacts under `artifacts/runs/<run-id>/`
 
 Put reproducers or notes you want retained in a regular directory such as
 `evidence/`. Candidate outputs are untrusted evidence and are never applied
-automatically. To independently replay a candidate or test a patch:
+automatically. To independently replay a candidate:
 
 ```bash
 python3 sandbox.py verify artifacts/python313.json \
   --candidate artifacts/runs/RUN_ID/candidate.json
-
-git apply --check artifacts/runs/RUN_ID/candidate.patch
 ```
 
-Note that `original.json` includes files generated during `prepare` (such as
-lockfiles), so compare against the recorded `source_hash`.
+`candidate.patch` is a diff against the prepared original snapshot
+(`original.json`), which includes files that `prepare` generated or changed (such
+as lockfiles). It may not apply to a plain repository checkout. To test it, run
+the check from a working tree whose contents match `original.json`, for example
+a copy restored from that snapshot (compare against the recorded `source_hash`):
+
+```bash
+git apply --check /path/to/artifacts/runs/RUN_ID/candidate.patch
+```
 
 ---
 
