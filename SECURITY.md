@@ -76,7 +76,9 @@ offline operation, or passing tests alone do not establish low severity.
 Containers share the host kernel. Per-volume and aggregate artifact disk quotas
 are absent. Protected tests cannot prove correctness or defeat every deliberately
 test-aware program. Legacy Compose shares command and inference trust boundaries;
-its prepared override also permits a writable container root filesystem.
+its prepared override also permits a writable container root filesystem. For
+that reason, Compose passes only a fixed dummy API key into the sandbox and does
+not support inference servers that require credentials.
 
 The controller supports plaintext HTTP when pointed at a local or operator-specified
 endpoint. Older version 1 campaigns lack prepared-state integrity checks. These limitations

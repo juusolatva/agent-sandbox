@@ -28,7 +28,9 @@ services:
       - llm-proxy
     environment:
       - OPENAI_BASE_URL=http://llm-proxy:1234/v1
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-local}
+      # Fixed dummy key: this container runs model-chosen commands, so never forward
+      # real credentials into it. Use the host controller for authenticated servers.
+      - OPENAI_API_KEY=local
       - LLM_MODEL=${LLM_MODEL:-}
       - MAX_ITERATIONS=${MAX_ITERATIONS:-20}
       - MAX_HISTORY_MESSAGES=${MAX_HISTORY_MESSAGES:-24}

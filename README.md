@@ -385,8 +385,8 @@ discarded on exit, combine `docker-compose.yml` with
 | `LLM_HOST` | *(required in Compose)* | Host/IP used by `llm-proxy` (falls back to `LM_STUDIO_HOST` if set) |
 | `LLM_PORT` | `1234` | Port of the inference server (falls back to `LM_STUDIO_PORT` if set) |
 | `LLM_MODEL` | *(required)* | Model ID served by the inference endpoint |
-| `OPENAI_BASE_URL` | `http://llm-proxy:1234/v1` (Compose) / `http://127.0.0.1:1234/v1` (controller) | Override inference API base URL |
-| `OPENAI_API_KEY` | `local` | API key for the inference endpoint |
+| `OPENAI_BASE_URL` | `http://127.0.0.1:1234/v1` | Host controller inference base URL (same as `--base-url`). Compose always uses `http://llm-proxy:1234/v1` and ignores this variable |
+| `OPENAI_API_KEY` | `local` | Host controller API key, read from the host shell. Compose always passes the dummy `local` and never forwards real credentials into the sandbox, so use the host controller for servers that require authentication |
 | `MAX_ITERATIONS` | `20` | Max steps per task (`0` = unlimited) |
 | `MAX_HISTORY_MESSAGES` | `24` | Sliding window size in messages (`0` disables) |
 | `MAX_CONTEXT_TOKENS` | `12000` | Estimated prompt-token budget (`0` disables) |
