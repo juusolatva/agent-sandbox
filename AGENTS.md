@@ -27,8 +27,7 @@ server (such as LM Studio, Ollama, llama.cpp, or vLLM). It supports C/C++
   bounded regular-file export/restore helper executed with `python3 -I`.
 - `examples/`: Smoke manifests, fixtures, and protected verification examples
   for all six language profiles.
-- `SECURITY.md` & `GLOSSARY.md`: Threat model, security invariants, and domain
-  terminology.
+- `SECURITY.md`: Threat model and security invariants.
 
 ## Working Guidance
 
@@ -47,9 +46,9 @@ server (such as LM Studio, Ollama, llama.cpp, or vLLM). It supports C/C++
 - Prefer bounded investigation cycles with persistent state over unrestricted
   loops. Record explicit stop reasons and verification outcomes.
 - Do not claim a project is secure because tests pass or an agent finishes.
-- Keep `README.md`, `SECURITY.md`, `GLOSSARY.md`, and regression tests aligned
-  with runtime behavior; verify unit and (when relevant) Docker boundary checks
-  after changes.
+- Keep `README.md`, `SECURITY.md`, and regression tests aligned with runtime
+  behavior; verify unit and (when relevant) Docker boundary checks after
+  changes.
 
 ## Verification
 

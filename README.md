@@ -20,9 +20,9 @@ The repository supports two workflows:
    sessions in `./workspace`, though with weaker boundaries than `sandbox.py`
    (see [SECURITY.md](SECURITY.md)).
 
-Project terminology is defined in [GLOSSARY.md](GLOSSARY.md), trust boundaries
-and security invariants in [SECURITY.md](SECURITY.md), and contributor/roadmap
-notes in [AGENTS.md](AGENTS.md).
+Trust boundaries and security invariants are documented in
+[SECURITY.md](SECURITY.md), and contributor/roadmap notes in
+[AGENTS.md](AGENTS.md).
 
 ---
 
