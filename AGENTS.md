@@ -78,16 +78,14 @@ PREPARED_IMAGE=sha256:example LLM_HOST=host.docker.internal \
 
 ## Continuous Integration
 
-- `harness.yml`, `languages.yml`, and `sonarqube.yml` run on the self-hosted
-  `[self-hosted, vakoilu]` runner (declared in `.github/actionlint.yaml`) on
-  pushes to `main` and on pull requests; branches pushed without a PR get no CI.
-  OSV-Scanner stays on GitHub-hosted runners because its upstream reusable
-  workflows set `runs-on` themselves.
-- Runner jobs use the host Docker daemon through the mounted socket, so
-  same-repository pull requests get root-equivalent host access; jobs skip pull
-  requests from forks. The transfer-helper bind mount requires `RUNNER_WORKDIR`
-  to have the same path on the host and in the runner container. CI images,
-  volumes, and build cache accumulate on the runner host's daemon.
+- `harness.yml`, `languages.yml`, `sonarqube.yml`, and OSV-Scanner run on
+  GitHub-hosted `ubuntu-latest` runners. The first three trigger on pushes to
+  `main` and on pull requests (including forks), so branches pushed without a PR
+  get no CI. Do not move them to self-hosted runners while the repository is
+  public: pull requests can change workflow files and run arbitrary code on the
+  runner.
+- Fork pull requests get no `SONAR_TOKEN`, so the SonarQube job runs the tests
+  but skips the scan step.
 - SonarQube path-traversal findings on operator-supplied host CLI paths
   (`sandbox.py --output`, the advisory snapshot directory, and the campaign lock
   directory) were triaged as false positives citing `SECURITY.md`.

@@ -1,4 +1,0 @@
-self-hosted-runner:
-  # Labels of the self-hosted runner (myoung34/github-runner, LABELS=vakoilu).
-  labels:
-    - vakoilu
