@@ -8,6 +8,6 @@
   "check": "npm ci --offline --ignore-scripts && npm test",
   "verification": {
     "source": "verification/node",
-    "command": "node /opt/sandbox/verification/check.js"
+    "command": "python3 -I /opt/sandbox/verification/check.py node /opt/sandbox/verification/harness.js"
   }
 }

@@ -9,6 +9,6 @@
   "check": ".venv/bin/python -m pytest -q",
   "verification": {
     "source": "verification/python",
-    "command": "python3 -I /opt/sandbox/verification/check.py"
+    "command": "python3 -I /opt/sandbox/verification/check.py python3 -I /opt/sandbox/verification/harness.py"
   }
 }

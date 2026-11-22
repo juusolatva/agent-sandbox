@@ -49,6 +49,9 @@ task and project-derived content. Model responses remain untrusted.
 - Candidate edits cannot replace protected checks or acceptance commands.
   Verification uses fresh state and prepared dependencies, with candidate source
   read-only. Completion requires explicit action and successful protected checks.
+  The verdict must come from a protected process that does not run candidate
+  code; candidate code runs in a child whose results the supervisor validates
+  completely (see the bundled `examples/verification`).
 - Parsing, output retention, commands, inference, and investigation cycles remain
   bounded. Failures and exhausted budgets must not become successful completion.
   Cleanup must address worker descendants as well as their parent process.

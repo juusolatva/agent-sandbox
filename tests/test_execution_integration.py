@@ -213,7 +213,7 @@ class CppSanitizerRegression(unittest.TestCase):
     @unittest.skipIf(os.environ.get('SANDBOX_TEST_PROFILE') not in (None, 'cpp'), 'C++ profile only')
     def test_repeated_sanitizer_startup(self):
         record = json.loads(Path('artifacts/cpp.json').read_text())
-        command = record['config']['verification']['command'] + '; for i in $(seq 1 100); do /tmp/check-clang || exit $?; done'
+        command = record['config']['verification']['command'] + '; for i in $(seq 1 100); do /tmp/harness-clang </dev/null || exit $?; done'
         with Worker(record) as worker:
             code, output = worker.execute(command, readonly=True)
         self.assertEqual(code, 0, output)

@@ -34,7 +34,7 @@ Trust boundaries and security invariants are documented in
   `sandbox.py campaign resume`):
   ```bash
   python3 -m venv .venv
-  .venv/bin/python -m pip install -r requirements-controller.txt
+  .venv/bin/python -m pip install --require-hashes -r requirements-controller.txt
   ```
 - **Optional:** [OSV-Scanner](https://google.github.io/osv-scanner/) `2.x` on
   `PATH` for offline dependency advisory scanning (`sandbox.py advisories scan`)
@@ -100,7 +100,7 @@ the manifest's directory:
   "check": ".venv/bin/python -m pytest -q",
   "verification": {
     "source": "verification/my-project",
-    "command": "python3 -I /opt/sandbox/verification/check.py"
+    "command": "python3 -I /opt/sandbox/verification/check.py python3 -I /opt/sandbox/verification/harness.py"
   },
   "memory": "4g",
   "cpus": 2,
@@ -162,6 +162,20 @@ Preparation requires both the workspace `check` and protected `verification`
 baselines to pass before saving the state JSON. Keep critical assertions in the
 protected verification directory so edits to mutable workspace tests cannot
 falsely satisfy completion.
+
+**Never decide the verdict in a process that runs candidate code.** If candidate
+code is imported or called by the process whose exit status is the verdict, the
+candidate can exit with status `0` before the assertions run. The bundled
+examples use a protected supervisor (`check.py`, the same file for every
+language) that runs a language-specific harness as a child process. The harness
+reads test cases on stdin and prints `answer: <value>` lines; the supervisor
+compares every answer itself and passes only when all expected answers arrive,
+so an early exit, crash, or wrong answer fails. Build steps may compile candidate
+code, but only the supervisor's exit status should decide the outcome:
+
+```bash
+python3 -I /opt/sandbox/verification/check.py python3 -I /opt/sandbox/verification/harness.py
+```
 
 ### Offline Dependency Advisory Checks
 
