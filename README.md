@@ -166,10 +166,11 @@ falsely satisfy completion.
 **Never decide the verdict in a process that runs candidate code.** If candidate
 code is imported or called by the process whose exit status is the verdict, the
 candidate can exit with status `0` before the assertions run. The bundled
-examples use a protected supervisor (`check.py`, the same file for every
-language) that runs a language-specific harness as a child process. The harness
-reads test cases on stdin and prints `answer: <value>` lines; the supervisor
-compares every answer itself and passes only when all expected answers arrive,
+examples share one verification directory (`examples/verification`): a protected
+supervisor (`check.py`) runs a language-specific harness (`harness.*`) as a child
+process. The harness reads test cases on stdin and prints `answer: <value>` lines;
+the supervisor reads its output incrementally, keeps only bounded parts, compares
+every answer itself and passes only when all expected answers arrive,
 so an early exit, crash, or wrong answer fails. Build steps may compile candidate
 code, but only the supervisor's exit status should decide the outcome:
 

@@ -5,7 +5,7 @@
   "prepare": [],
   "check": "g++-12 main.cpp -o /tmp/gcc-smoke && /tmp/gcc-smoke && clang++-19 -g -fno-pie -no-pie -fsanitize=address,undefined main.cpp -o /tmp/clang-smoke && /tmp/clang-smoke",
   "verification": {
-    "source": "verification/cpp",
+    "source": "verification",
     "command": "g++-12 -I /home/agent/workspace /opt/sandbox/verification/harness.cpp -o /tmp/harness && python3 -I /opt/sandbox/verification/check.py /tmp/harness && clang++-19 -g -fno-pie -no-pie -fsanitize=address,undefined -I /home/agent/workspace /opt/sandbox/verification/harness.cpp -o /tmp/harness-clang && python3 -I /opt/sandbox/verification/check.py /tmp/harness-clang"
   }
 }

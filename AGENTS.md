@@ -91,6 +91,10 @@ PREPARED_IMAGE=sha256:example LLM_HOST=host.docker.internal \
   directory) were triaged as false positives
   citing `SECURITY.md`. Sonar may describe these as "LLM-supplied" CLI arguments;
   they are typed by the operator.
+- The verification supervisor's argv (`examples/verification/check.py`, S8705
+  command argument injection) comes from the operator's protected verification
+  command, and the Node harness's absolute `require` of the workspace module
+  (S6859) is deliberate; both were triaged as false positives.
 
 ## Open / Unimplemented Roadmap
 

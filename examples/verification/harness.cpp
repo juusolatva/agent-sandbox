@@ -2,6 +2,7 @@
 #include <iostream>
 
 int main() {
-    int left, right;
+    int left = 0;
+    int right = 0;
     while (std::cin >> left >> right) std::cout << "answer: " << add(left, right) << '\n';
 }
