@@ -49,6 +49,8 @@ def proposal(finding, evidence):
 
 def import_report(bundle, evidence):
     """Validate data only; never execute a report's reproducer or accept its status."""
+    if not isinstance(bundle, dict):
+        raise ValueError('Candidate snapshot must be a JSON object')
     entry = bundle.get(REPORT_NAME)
     if entry is None:
         return {'status': 'missing', 'findings': []}

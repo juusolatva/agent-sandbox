@@ -138,7 +138,7 @@ class Worker:
     def execute(self, command, *, readonly=False, transfer=None, payload=None, limit=8000, timeout=None,
                 digest=None, details=None):
         config = self.record['config']
-        timeout = timeout or config.get('timeout', 600)
+        timeout = config.get('timeout', 600) if timeout is None else timeout
         if transfer:
             timeout = min(timeout, 30)
         elif self.deadline is not None:

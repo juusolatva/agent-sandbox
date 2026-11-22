@@ -86,8 +86,9 @@ PREPARED_IMAGE=sha256:example LLM_HOST=host.docker.internal \
 - Fork pull requests get no `SONAR_TOKEN`, so the SonarQube job runs the tests
   but skips the scan step.
 - SonarQube path-traversal findings on operator-supplied host CLI paths
-  (`sandbox.py --output`, `sandbox.py verify --candidate`, the advisory snapshot
-  directory, and the campaign lock directory) were triaged as false positives
+  (`sandbox.py --output`, `sandbox.py verify --candidate`, the `campaign create`
+  state and tasks files, the advisory snapshot directory, and the campaign lock
+  directory) were triaged as false positives
   citing `SECURITY.md`. Sonar may describe these as "LLM-supplied" CLI arguments;
   they are typed by the operator.
 
@@ -101,7 +102,11 @@ The items below are proposed future work and are **not** implemented yet:
    size limits, and concurrency caps. Add automated network probes verifying
    isolation from the host gateway, LAN/internet routes, DNS, IPv6, and sibling
    containers, and tighten legacy Compose parity (`docker-compose.prepared.yml`
-   currently uses `read_only: false`).
+   currently uses `read_only: false`). The same work should bound the host
+   controller's inference transport: cap received/decoded response bytes before
+   deserialization and enforce a cancellable wall-clock deadline across each
+   complete request, including model discovery (tested with a slow, oversized
+   fake transport).
 2. **Model-persisted investigation summaries & exact tokenization:**
    Persist the condensed history record to run artifacts and evaluate
    model-written or structured investigation state outside the sliding window.

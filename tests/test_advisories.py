@@ -152,29 +152,169 @@ class AdvisoryTests(unittest.TestCase):
         self.assertIn('--offline-vulnerabilities', seen['command'])
         self.assertEqual(seen['env']['OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY'], str(self.snapshot))
 
-    def test_extraction_keeps_only_regular_recognised_lockfiles(self):
+    def extract(self, members, inventory=None):
         stream = io.BytesIO()
         with tarfile.open(fileobj=stream, mode='w') as bundle:
-            for name, data in (('./go.mod', b'module x\n'), ('./sub/requirements.txt', b'a==1\n'),
-                               ('./notes.txt', b'ignored'), ('./sub/../../escape/go.mod', b'x')):
+            for name, data in members:
                 member = tarfile.TarInfo(name)
                 member.size = len(data)
                 bundle.addfile(member, io.BytesIO(data))
             link = tarfile.TarInfo('./Cargo.lock')
             link.type, link.linkname = tarfile.SYMTYPE, '/etc/passwd'
             bundle.addfile(link)
+            if inventory is not None:
+                data = json.dumps(inventory).encode()
+                member = tarfile.TarInfo(advisories.INVENTORY)
+                member.size = len(data)
+                bundle.addfile(member, io.BytesIO(data))
+        commands = []
 
         def fake_docker(command, stdout=None, **kwargs):
-            stdout.write(stream.getvalue())
+            commands.append(command)
+            if command[1] == 'run':
+                stdout.write(stream.getvalue())
             return subprocess.CompletedProcess(command, 0)
-        with patch.object(advisories.subprocess, 'run', side_effect=fake_docker) as run:
-            root, found = advisories.extract_lockfiles('sha256:image', self.directory)
-        command = run.call_args.args[0]
-        self.assertIn('--network', command)
+        with patch.object(advisories.subprocess, 'run', side_effect=fake_docker):
+            return advisories.extract_lockfiles('sha256:image', self.directory), commands
+
+    def test_extraction_keeps_only_regular_recognised_lockfiles(self):
+        (root, found, problems), commands = self.extract(
+            (('go.mod', b'module x\n'), ('sub/requirements.txt', b'a==1\n'),
+             ('notes.txt', b'ignored'), ('sub/../../escape/go.mod', b'x')),
+            inventory={'omitted': [], 'errors': []})
+        command = commands[0]
         self.assertEqual(command[command.index('--network') + 1], 'none')
+        for flag in ('--read-only', '--init', '--pids-limit', '--memory', '--user', '--log-driver'):
+            self.assertIn(flag, command)
+        self.assertIn('FTP_PROXY=', command)
+        self.assertEqual(commands[1][:3], ['docker', 'rm', '-f'])
+        self.assertEqual(commands[1][3], command[command.index('--name') + 1])
         self.assertEqual(found, ['go.mod', 'sub/requirements.txt'])
         self.assertFalse((self.directory.parent / 'escape').exists())
         self.assertFalse((root / 'Cargo.lock').exists())
+        # Rejected members are reported, not silently dropped.
+        self.assertEqual(sorted(p['lockfile'] for p in problems),
+                         ['Cargo.lock', 'notes.txt', 'sub/../../escape/go.mod'])
+
+    def test_omitted_lockfiles_make_an_otherwise_clean_scan_incomplete(self):
+        self.fetch('Go')
+        clean = lambda *a: {'status': 'scanned', 'vulnerabilities': []}
+        for inventory in ({'omitted': [{'lockfile': 'big/go.mod', 'reason': 'larger than 5242880 bytes'}],
+                           'errors': []},
+                          {'omitted': [], 'errors': ['locked: Permission denied']},
+                          None):
+            with self.subTest(inventory=inventory):
+                shutil.rmtree(self.directory / 'lockfiles', ignore_errors=True)
+                (_, found, problems), _ = self.extract((('go.mod', b'module x\n'),), inventory)
+                problems = [p for p in problems if p['lockfile'] != 'Cargo.lock']
+                self.assertTrue(problems)
+                report = self.report(clean, found, discovery=problems)
+                self.assertEqual(advisories.report_status(report), 2)
+                self.assertIn('NOT SCANNED', advisories.summarize(report))
+
+    def test_discovery_script_reports_every_limit_and_error(self):
+        import os
+        import sys
+        project = self.directory / 'workspace'
+        (project / 'big').mkdir(parents=True)
+        (project / 'go.mod').write_text('module x\n')
+        (project / 'big' / 'Cargo.lock').write_bytes(b'x' * 50)
+        (project / 'requirements.txt').symlink_to('go.mod')
+        (project / 'node_modules').mkdir()
+        (project / 'node_modules' / 'package-lock.json').write_text('{}')
+        locked = project / 'locked'
+        locked.mkdir()
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o755)
+        options = {'root': str(project), 'names': sorted(advisories.EXACT_LOCKFILES),
+                   'pruned': list(advisories.PRUNED), 'max_bytes': 20, 'max_files': 200,
+                   'max_total': 1000, 'inventory': advisories.INVENTORY}
+        output = subprocess.run([sys.executable, '-I', '-c', advisories.DISCOVERY_SCRIPT, json.dumps(options)],
+                                capture_output=True, check=True).stdout
+        with tarfile.open(fileobj=io.BytesIO(output)) as bundle:
+            names = bundle.getnames()
+            inventory = json.loads(bundle.extractfile(advisories.INVENTORY).read())
+        self.assertEqual(sorted(names), sorted(['go.mod', advisories.INVENTORY]))
+        reasons = {item['lockfile']: item['reason'] for item in inventory['omitted']}
+        self.assertIn('larger than', reasons['big/Cargo.lock'])
+        self.assertEqual(reasons['requirements.txt'], 'not a regular file')
+        if os.geteuid() != 0:
+            self.assertTrue(any('locked' in error for error in inventory['errors']))
+        options.update(max_bytes=100, max_files=1)
+        output = subprocess.run([sys.executable, '-I', '-c', advisories.DISCOVERY_SCRIPT, json.dumps(options)],
+                                capture_output=True, check=True).stdout
+        with tarfile.open(fileobj=io.BytesIO(output)) as bundle:
+            inventory = json.loads(bundle.extractfile(advisories.INVENTORY).read())
+        self.assertTrue(any('more than 1 lockfiles' in item['reason'] for item in inventory['omitted']))
+
+    def test_refreshing_one_ecosystem_does_not_renew_another(self):
+        old = advisories.utc_now() - datetime.timedelta(days=30)
+        with patch.object(advisories, 'utc_now', return_value=old):
+            self.fetch('Go')
+        self.fetch('npm')
+        clean = lambda *a: {'status': 'scanned', 'vulnerabilities': []}
+        go = self.report(clean, ('go.mod',))
+        self.assertEqual(go['snapshot']['stale_databases'], ['Go'])
+        self.assertEqual(advisories.report_status(go), 2)
+        npm = self.report(clean, ('package-lock.json',))
+        self.assertFalse(npm['snapshot']['stale'])
+        self.assertEqual(advisories.report_status(npm), 0)
+        # Snapshots written before per-database fetch times have unknown age: not clean.
+        metadata = json.loads((self.snapshot / 'metadata.json').read_text())
+        del metadata['databases']['npm']['fetched_at']
+        (self.snapshot / 'metadata.json').write_text(json.dumps(metadata))
+        self.assertEqual(advisories.report_status(self.report(clean, ('package-lock.json',))), 2)
+
+    def test_invalid_max_age_is_rejected(self):
+        self.fetch('Go')
+        for value in (float('nan'), float('inf'), -1, True):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.report(lambda *a: {'status': 'scanned', 'vulnerabilities': []}, max_age_days=value)
+
+    def test_scanner_exit_one_without_parsed_findings_is_unavailable(self):
+        result = subprocess.CompletedProcess([], 1, '{"results": []}', '')
+        check = advisories.scan_lockfile(self.directory, 'go.mod', self.snapshot, runner=lambda *a, **k: result)
+        self.assertEqual(check['status'], 'unavailable')
+
+    def test_partial_multi_ecosystem_fetch_replaces_nothing(self):
+        self.fetch('Go', 'PyPI')
+        before = advisories.database_path(self.snapshot, 'Go').read_bytes()
+        updated = database_bytes([{**OSV_RECORD, 'id': 'GO-NEW'}])
+        partly_corrupt = opener({'Go': updated, 'PyPI': b'not a zip'})
+        with self.assertRaises(zipfile.BadZipFile):
+            advisories.fetch(self.snapshot, ('Go', 'PyPI'), partly_corrupt)
+        self.assertEqual(advisories.database_path(self.snapshot, 'Go').read_bytes(), before)
+        self.assertEqual(advisories.verify_snapshot(self.snapshot)[2], {})
+
+    def test_repeated_ecosystem_downloads_once(self):
+        self.fetch('Go')
+        calls = []
+        payload = database_bytes([{**OSV_RECORD, 'id': 'GO-NEW'}])
+
+        def counting(url, timeout=None):
+            calls.append(url)
+            return Response(payload)
+        metadata = advisories.fetch(self.snapshot, ('Go', 'Go'), counting)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(metadata['databases']['Go']['sha256'], hashlib.sha256(payload).hexdigest())
+        self.assertEqual(advisories.verify_snapshot(self.snapshot)[2], {})
+
+    def test_freshness_compares_exact_age_not_rounded_display(self):
+        self.fetch('Go')
+        fetched = datetime.datetime.fromisoformat(
+            advisories.load_metadata(self.snapshot)['databases']['Go']['fetched_at'])
+        clean = lambda *a: {'status': 'scanned', 'vulnerabilities': []}
+        # 7.004 days displays as 7.0 but is past a 7-day limit.
+        report = self.report(clean, now=fetched + datetime.timedelta(days=7.004))
+        self.assertEqual(report['snapshot']['database_age_days']['Go'], 7.0)
+        self.assertTrue(report['snapshot']['stale'])
+        just_fetched = self.report(clean, max_age_days=0, now=fetched + datetime.timedelta(minutes=5))
+        self.assertTrue(just_fetched['snapshot']['stale'])
+
+    def test_fetch_creates_missing_parent_directories(self):
+        nested = self.directory / 'a' / 'b' / 'snapshot'
+        advisories.fetch(nested, ('Go',), opener({'Go': database_bytes()}))
+        self.assertEqual(advisories.verify_snapshot(nested)[1], ['Go'])
 
     @unittest.skipUnless(shutil.which('osv-scanner'), 'osv-scanner is not installed')
     def test_real_scanner_finds_advisory_from_snapshot_only(self):

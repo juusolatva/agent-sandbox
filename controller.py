@@ -5,6 +5,7 @@ import hashlib
 import subprocess
 import tempfile
 import json
+import math
 import os
 from pathlib import Path
 import time
@@ -86,13 +87,21 @@ class DeadlineClient:
         self.deadline = deadline
         self.chat = self
         self.completions = self
+        self.last_error = None
 
     def create(self, **kwargs):
-        remaining = self.deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError('Run deadline exceeded')
-        request_client = self.client.with_options(timeout=min(agent.LLM_TIMEOUT, remaining))
-        return request_client.chat.completions.create(max_tokens=4096, **kwargs)
+        try:
+            remaining = self.deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('Run deadline exceeded')
+            request_client = self.client.with_options(timeout=min(agent.LLM_TIMEOUT, remaining))
+            response = request_client.chat.completions.create(max_tokens=4096, **kwargs)
+            agent.first_message(response)
+            return response
+        except Exception as exc:
+            # agent.call_llm_resilient reports failures as None; keep the cause for result.json.
+            self.last_error = f'{type(exc).__name__}: {exc}'[:4000]
+            raise
 
 
 def save_candidate(worker, before, evidence):
@@ -107,8 +116,9 @@ def save_candidate(worker, before, evidence):
 class RunSession:
     """Agent-loop callbacks bound to one worker, evidence store, and run deadline."""
 
-    def __init__(self, record, worker, evidence, deadline, result, text_actions):
+    def __init__(self, record, worker, evidence, deadline, result, text_actions, command_timeout):
         self.record = record
+        self.command_timeout = command_timeout
         self.worker = worker
         self.evidence = evidence
         self.deadline = deadline
@@ -119,7 +129,7 @@ class RunSession:
     def execute(self, command):
         # Compare the complete output stream, not the truncated text shown to the model.
         digest = hashlib.sha256()
-        code, output = self.worker.execute(command, timeout=agent.COMMAND_TIMEOUT, digest=digest)
+        code, output = self.worker.execute(command, timeout=self.command_timeout, digest=digest)
         self.repetition.observe(command, code, digest.hexdigest())
         return code, f"Exit code: {code}\n{output}"
 
@@ -133,25 +143,58 @@ class RunSession:
         bounded = DeadlineClient(client, self.deadline)
         if self.text_actions:
             response = bounded.create(model=model, messages=agent.flatten_messages_for_fallback(messages))
-            msg, fallback = response.choices[0].message, True
+            msg, fallback = agent.first_message(response), True
         else:
             msg, fallback = agent.call_llm_resilient(bounded, model, messages)
         if msg is not None:
             self.evidence.event({'kind': 'assistant', 'message': msg.model_dump(), 'fallback': fallback})
+        elif bounded.last_error:
+            self.result['error'] = bounded.last_error
+            self.evidence.event({'kind': 'inference_error', 'error': bounded.last_error})
         return msg, fallback
 
 
+def validated_command_timeout(record, command_timeout):
+    """Model commands default to the manifest timeout that prepare/check/verify already use."""
+    if command_timeout is None:
+        command_timeout = record['config'].get('timeout', 600)
+    if isinstance(command_timeout, bool) or not isinstance(command_timeout, (int, float)) \
+            or not math.isfinite(command_timeout) or command_timeout <= 0:
+        raise ValueError('Command timeout must be a positive number of seconds')
+    return command_timeout
+
+
+def run_loop(session, client, model, task, steps, before, result):
+    """Run the agent loop with logs captured, always retaining the candidate snapshot."""
+    evidence, worker = session.evidence, session.worker
+    with (evidence.path / 'controller.log').open('w') as log, \
+            contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
+        try:
+            outcome = agent.run_agent_loop(client, model, task, execute=session.execute,
+                                           verify=session.gate, infer=session.infer, steps=steps)
+        except BaseException:
+            # Retain what we can without replacing the original stop reason (Stalled, Ctrl-C).
+            try:
+                save_candidate(worker, before, evidence)
+            except Exception as exc:
+                result['export_error'] = str(exc)[:4000]
+            raise
+        save_candidate(worker, before, evidence)
+    return outcome
+
+
 def run(record, task, artifact_root, base_url=None, model=None, steps=20, timeout=1800,
-        client=None, text_actions=False):
+        client=None, text_actions=False, command_timeout=None):
     if steps <= 0 or timeout <= 0:
         raise ValueError('Stage 3 requires positive step and run-time limits')
+    command_timeout = validated_command_timeout(record, command_timeout)
     if not record['config'].get('verification') or not record.get('verification_hash'):
         raise ValueError('Prepare this project with protected verification before running the controller')
     evidence = Evidence(artifact_root)
     deadline = time.monotonic() + timeout
     runtime_hash = hashlib.sha256(b''.join((Path(__file__).parent / name).read_bytes()
         for name in ('controller.py', 'execution.py', 'agent.py', 'investigation.py', 'docker/transfer.py'))).hexdigest()
-    result = {'runtime_hash': runtime_hash, 'command_timeout': agent.COMMAND_TIMEOUT,
+    result = {'runtime_hash': runtime_hash, 'command_timeout': command_timeout,
               'llm_timeout': agent.LLM_TIMEOUT, 'max_response_tokens': 4096, 'status': 'failed', 'image': record['image'], 'source_hash': record['source_hash'],
               'verification_hash': record['verification_hash'], 'task': task, 'steps': steps,
               'timeout': timeout, 'text_actions': text_actions, 'baseline_verified': False, 'candidate_verified': False}
@@ -172,13 +215,8 @@ def run(record, task, artifact_root, base_url=None, model=None, steps=20, timeou
             before = worker.export()
             evidence.save('original.json', before)
 
-            session = RunSession(record, worker, evidence, deadline, result, text_actions)
-            with (evidence.path / 'controller.log').open('w') as log, contextlib.redirect_stdout(log):
-                try:
-                    outcome = agent.run_agent_loop(client, model, task, execute=session.execute,
-                                                   verify=session.gate, infer=session.infer, steps=steps)
-                finally:
-                    save_candidate(worker, before, evidence)
+            session = RunSession(record, worker, evidence, deadline, result, text_actions, command_timeout)
+            outcome = run_loop(session, client, model, task, steps, before, result)
         result['status'] = outcome.name.lower()
     except KeyboardInterrupt:
         outcome = agent.Outcome.INTERRUPTED

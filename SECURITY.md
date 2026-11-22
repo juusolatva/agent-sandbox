@@ -84,6 +84,10 @@ that reason, Compose passes only a fixed dummy API key into the sandbox and does
 not support inference servers that require credentials.
 
 The controller supports plaintext HTTP when pointed at a local or operator-specified
-endpoint. Older version 1 campaigns lack prepared-state integrity checks. These limitations
+endpoint. Inference requests are bounded by a per-request timeout, the remaining run
+deadline checked before each request, and a response token limit, but not by a cap on
+received bytes or a wall-clock limit across a slow, trickling response; a misbehaving
+endpoint can therefore exceed the run's memory or time budget while holding a campaign
+lock. A bounded transport is planned with the inference gateway (roadmap item 1). Older version 1 campaigns lack prepared-state integrity checks. These limitations
 are not blanket exclusions. The recorded decision to monitor unresolved base-image CVEs
 does not suppress new evidence of exploitability or impact.

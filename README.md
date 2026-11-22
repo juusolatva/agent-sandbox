@@ -175,16 +175,23 @@ python3 sandbox.py advisories scan artifacts/go.json artifacts/advisories \
   --output artifacts/go-advisories.json
 ```
 
-`fetch` downloads OSV ecosystem databases (`Go`, `PyPI`, `crates.io`, `npm`) and
-writes SHA-256/size/timestamp metadata last. `scan` extracts recognized lockfiles
-(`go.mod`, `Cargo.lock`, `package-lock.json`, `requirements*.txt`, `poetry.lock`,
-`uv.lock`, `Pipfile.lock`) from the prepared image with networking disabled,
-verifies snapshot hashes and `--max-age-days` (default `7`), and runs
-`osv-scanner --offline --offline-vulnerabilities`.
+`fetch` downloads OSV ecosystem databases (`Go`, `PyPI`, `crates.io`, `npm`),
+replaces existing databases only after every requested download validates, and
+writes SHA-256/size/timestamp metadata last. Each database records its own fetch
+time, so refreshing one ecosystem does not renew the others. `scan` extracts
+recognized lockfiles (`go.mod`, `Cargo.lock`, `package-lock.json`,
+`requirements*.txt`, `poetry.lock`, `uv.lock`, `Pipfile.lock`) from the prepared
+image in a read-only, resource-limited container with networking disabled,
+verifies snapshot hashes and the age of each database it uses against
+`--max-age-days` (default `7`), and runs
+`osv-scanner --offline --offline-vulnerabilities`. Discovery keeps at most `200`
+lockfiles of up to `5 MiB` each (`64 MiB` in total) and lists every recognized
+lockfile it leaves out.
 
 Exit codes: `0` clean, `1` known advisories found, `2` check incomplete
-(missing database, missing lockfiles, tampered/stale snapshot, or scanner
-failure—never reported as clean). Matching lockfile versions to OSV advisories
+(missing database, missing or omitted lockfiles, discovery errors,
+tampered/stale snapshot, a database fetched before per-database times were
+recorded, or scanner failure—never reported as clean). Matching lockfile versions to OSV advisories
 does not analyze reachability or establish that code is safe.
 
 ---
@@ -197,6 +204,10 @@ does not analyze reachability or establish that code is safe.
   --model your-model-id --steps 20 --timeout 1800
 ```
 
+- **Command timeout:** each model command may run for the manifest `timeout`
+  (default `600` seconds), bounded by the remaining run time. Override it with
+  `--command-timeout SECONDS` on `run` or `campaign resume`. (`COMMAND_TIMEOUT`
+  applies only to legacy Compose.)
 - **Endpoint & model selection:** The controller connects to `--base-url` or
   `OPENAI_BASE_URL`, defaulting to `http://127.0.0.1:1234/v1`. Model selection
   is required (`--model` or `LLM_MODEL`). Pass `OPENAI_API_KEY` if your server
@@ -282,10 +293,13 @@ python3 sandbox.py campaign status artifacts/my-campaign
 
 - **Scheduling & budgets:** Targets are ordered by fewest attempts, descending
   `priority`, and input order. Duplicate `(task, scope)` pairs are queued once.
-  `--max-attempts` defaults to `3`; `--stall-limit` defaults to `2` successive
-  unsuccessful attempts with unchanged candidate snapshots (excluding report
-  wording), and `3` identical command/result digests inside a run also mark a
-  target stalled.
+  `--max-attempts` defaults to `3`; `--stall-limit` defaults to `2` (the
+  minimum) successive unsuccessful attempts with unchanged candidate snapshots
+  (excluding report wording), and `3` identical command/result digests inside a
+  run also mark a target stalled. The next target is chosen again after every
+  attempt, so with `--continue-on-failure` a target can be retried within one
+  `resume` while `--max-runs` allows it. An interrupted run (Ctrl-C or SIGTERM)
+  always stops the campaign with exit code `130`.
 - **State integrity & outcomes:** Writes are atomic and locked (`flock`). Version
   2 campaigns pin the canonical SHA-256 of `prepared.json` and reject state
   changes. `campaign resume` exits `0` only on `all_completed`; other stop
@@ -416,7 +430,7 @@ discarded on exit, combine `docker-compose.yml` with
 | `MAX_HISTORY_MESSAGES` | `24` | Sliding window size in messages (`0` disables) |
 | `MAX_CONTEXT_TOKENS` | `12000` | Estimated prompt-token budget (`0` disables) |
 | `MAX_SUMMARY_CHARS` | `3000` | Condensed record cap for trimmed steps (`0` disables) |
-| `COMMAND_TIMEOUT` | `30` | Timeout in seconds per shell command (`agent.py`) |
+| `COMMAND_TIMEOUT` | `30` | Legacy Compose timeout in seconds per shell command (`agent.py`); `sandbox.py run` uses the manifest `timeout` or `--command-timeout` |
 | `LLM_TIMEOUT` | `120` | Timeout in seconds per inference API call |
 | `VERIFY_CMD` | *(empty)* | Legacy Compose bash check required before completion |
 | `CONTINUOUS` | `0` | Set to `1` to repeat completed cycles (`agent.py`) |

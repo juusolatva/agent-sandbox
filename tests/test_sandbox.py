@@ -177,6 +177,13 @@ class PreparationTests(unittest.TestCase):
                 sandbox.validate_fields(dict(name='x', source='s', profile='node', check='true',
                                              prepare_timeout=value))
 
+    def test_memory_and_pids_are_validated(self):
+        base = dict(name='x', source='s', profile='node', check='true')
+        for extra in ({'memory': ''}, {'memory': ['4g']}, {'memory': '4 gb'}, {'pids': 64.5}):
+            with self.subTest(extra=extra), self.assertRaises(ValueError):
+                sandbox.validate_fields(dict(base, **extra))
+        sandbox.validate_fields(dict(base, memory='512m', pids=64))
+
     def test_preparation_does_not_publish_state_on_failed_check(self):
         with tempfile.TemporaryDirectory() as directory:
             manifest = Path(directory) / 'project.json'

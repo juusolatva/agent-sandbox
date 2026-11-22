@@ -10,6 +10,7 @@ Hybrid Resilient Sandboxed Agent Loop for OpenAI-compatible inference servers.
 
 import itertools
 import json
+import math
 import os
 import selectors
 import signal
@@ -25,19 +26,33 @@ except ModuleNotFoundError as exc:
         raise
     OpenAI = None
 
+def env_number(name: str, default, cast=int, minimum=0):
+    """Read a numeric setting, failing with its name instead of a bare conversion error."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = cast(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be a number, got {raw!r}") from None
+    if not math.isfinite(value) or value < minimum:
+        raise ValueError(f"{name} must be a finite number >= {minimum}, got {raw!r}")
+    return value
+
+
 BASE_URL = os.environ.get("OPENAI_BASE_URL", "http://llm-proxy:1234/v1")
 API_KEY = os.environ.get("OPENAI_API_KEY", "local")
 MODEL_ENV = os.environ.get("LLM_MODEL", "").strip()
-MAX_ITERATIONS = int(os.environ.get("MAX_ITERATIONS", "20"))  # 0 = infinite steps
-MAX_HISTORY_MESSAGES = int(os.environ.get("MAX_HISTORY_MESSAGES", "24"))
+MAX_ITERATIONS = env_number("MAX_ITERATIONS", 20)  # 0 = infinite steps
+MAX_HISTORY_MESSAGES = env_number("MAX_HISTORY_MESSAGES", 24)
 # Estimated prompt-token budget for the retained history; 0 disables it.
-MAX_CONTEXT_TOKENS = int(os.environ.get("MAX_CONTEXT_TOKENS", "12000"))
+MAX_CONTEXT_TOKENS = env_number("MAX_CONTEXT_TOKENS", 12000)
 # Character cap for the condensed record of trimmed-away steps; 0 disables it.
-MAX_SUMMARY_CHARS = int(os.environ.get("MAX_SUMMARY_CHARS", "3000"))
+MAX_SUMMARY_CHARS = env_number("MAX_SUMMARY_CHARS", 3000)
 SUMMARY_LINE_CHARS = 120
 MAX_NOTES = 200
 CHARS_PER_TOKEN = 3  # conservative estimate; no tokenizer is available offline
-COMMAND_TIMEOUT = int(os.environ.get("COMMAND_TIMEOUT", "30"))
+COMMAND_TIMEOUT = env_number("COMMAND_TIMEOUT", 30, minimum=1)
 VERIFY_CMD = os.environ.get("VERIFY_CMD", "").strip()
 CONTINUOUS = os.environ.get("CONTINUOUS", "0").strip().lower() in {"1", "true", "yes"}
 MAX_OUTPUT_CHARS = 8000
@@ -46,7 +61,7 @@ WORKSPACE = os.environ.get("WORKSPACE", "/home/agent/workspace")
 # Legacy Compose only: kill every process left by earlier actions before the next one.
 PROC = "/proc"
 REAP_STRAYS = os.environ.get("SANDBOX_REAP_STRAYS", "0").strip().lower() in {"1", "true", "yes"}
-LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "120"))
+LLM_TIMEOUT = env_number("LLM_TIMEOUT", 120.0, float, minimum=1)
 
 
 class Outcome(IntEnum):
@@ -455,7 +470,7 @@ def call_llm_resilient(client: OpenAI, model: str, messages: list[dict]):
             tools=TOOLS,
             tool_choice="auto",
         )
-        return response.choices[0].message, False
+        return first_message(response), False
     except Exception as exc:
         err_detail = getattr(getattr(exc, "response", None), "text", str(exc))
         if "peg-native" not in err_detail.lower():
@@ -469,13 +484,21 @@ def call_llm_resilient(client: OpenAI, model: str, messages: list[dict]):
                     model=model,
                     messages=fallback_msgs,
                 )
-                return response.choices[0].message, True
+                return first_message(response), True
             except Exception as retry_exc:
-                if attempt == 3:
+                if attempt == 3 or isinstance(retry_exc, TimeoutError):
                     print(f"[!] Fallback API error: {retry_exc}", file=sys.stderr)
                     return None, True
                 time.sleep(1.0 * attempt)
     return None, True
+
+
+def first_message(response):
+    """The first choice's message, rejecting responses without choices."""
+    choices = getattr(response, "choices", None)
+    if not choices:
+        raise ValueError("Inference response contained no choices")
+    return choices[0].message
 
 
 def validate_action(name: str, arguments: str) -> dict:
