@@ -76,6 +76,15 @@ class AgentTests(unittest.TestCase):
         self.assertLess(len(json.dumps(messages)), agent.MAX_ACTION_CHARS * 3)
         self.assertIn('Invalid action', messages[1]['content'])
 
+    def test_oversized_unknown_tool_name_is_bounded_in_history(self):
+        messages = []
+        name = 'n' * (agent.MAX_ACTION_CHARS * 4)
+        call = types.SimpleNamespace(id='c', function=types.SimpleNamespace(name=name, arguments='{}'))
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent.handle_tool_calls('', [call], messages, Mock(), Mock())
+        self.assertIn('Unknown tool', messages[-1]['content'])
+        self.assertLess(len(json.dumps(messages)), 2000)
+
     def test_reap_strays_spares_self_and_ancestors(self):
         with tempfile.TemporaryDirectory() as proc:
             # PID 1 (init) -> 7 (agent, self) ; 9 and 12 are strays from earlier actions.

@@ -125,6 +125,32 @@ def parent_pid(pid: int, proc: str = "/proc") -> int:
         return int(stream.read().rsplit(")", 1)[1].split()[1])
 
 
+def protected_pids(proc: str = "/proc", self_pid: int | None = None) -> set[int]:
+    """This process and its ancestors, which a stray sweep must never signal."""
+    keep, pid = set(), self_pid or os.getpid()
+    while pid > 0 and pid not in keep:
+        keep.add(pid)
+        try:
+            pid = parent_pid(pid, proc)
+        except (OSError, ValueError, IndexError):
+            break
+    return keep
+
+
+def signal_others(keep: set[int], proc: str = "/proc", kill=os.kill) -> int:
+    """SIGKILL every listed process outside keep; return how many were signalled."""
+    signalled = 0
+    for entry in os.listdir(proc):
+        if not entry.isdigit() or int(entry) in keep:
+            continue
+        try:
+            kill(int(entry), signal.SIGKILL)
+            signalled += 1
+        except (ProcessLookupError, PermissionError):
+            pass
+    return signalled
+
+
 def reap_strays(proc: str = "/proc", kill=os.kill, self_pid: int | None = None) -> int:
     """Kill every process except this one and its ancestors; return how many were signalled.
 
@@ -133,28 +159,46 @@ def reap_strays(proc: str = "/proc", kill=os.kill, self_pid: int | None = None) 
     running into later actions and verification. Only safe inside that
     container's PID namespace, so it runs only when SANDBOX_REAP_STRAYS is set.
     """
-    keep, pid = set(), self_pid or os.getpid()
-    while pid > 0 and pid not in keep:
-        keep.add(pid)
-        try:
-            pid = parent_pid(pid, proc)
-        except (OSError, ValueError, IndexError):
-            break
+    keep = protected_pids(proc, self_pid)
     total = 0
     for _ in range(10):  # Repeat: a stray may fork while it is being swept.
-        signalled = 0
-        for entry in os.listdir(proc):
-            if not entry.isdigit() or int(entry) in keep:
-                continue
-            try:
-                kill(int(entry), signal.SIGKILL)
-                signalled += 1
-            except (ProcessLookupError, PermissionError):
-                pass
+        signalled = signal_others(keep, proc, kill)
         total += signalled
         if not signalled:
             break
     return total
+
+
+def drain_output(process, command: str) -> tuple[bytearray, bool]:
+    """Read merged output until EOF within COMMAND_TIMEOUT; return (retained, truncated)."""
+    retained, truncated = bytearray(), False
+    deadline = time.monotonic() + COMMAND_TIMEOUT
+    with selectors.DefaultSelector() as selector:
+        selector.register(process.stdout, selectors.EVENT_READ)
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, COMMAND_TIMEOUT)
+            for key, _ in selector.select(min(remaining, 0.1)):
+                chunk = os.read(key.fileobj.fileno(), 65536)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                available = MAX_OUTPUT_CHARS - len(retained)
+                retained.extend(chunk[:available])
+                truncated |= len(chunk) > available
+        process.wait(timeout=max(0.001, deadline - time.monotonic()))
+    return retained, truncated
+
+
+def stop_process_group(process) -> None:
+    """Kill the command's process group (including background children) and reap it."""
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait()
+    process.stdout.close()
 
 
 def execute_bash(command: str, label: str = "sandbox $") -> tuple[int, str]:
@@ -162,30 +206,14 @@ def execute_bash(command: str, label: str = "sandbox $") -> tuple[int, str]:
     if REAP_STRAYS:
         reap_strays()
     print(f"\n[{label}] {command}")
-    retained = bytearray()
-    truncated = False
+    retained, truncated = bytearray(), False
     process = None
     try:
         process = subprocess.Popen(
             ["/bin/bash", "-c", command], cwd=WORKSPACE,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
         )
-        deadline = time.monotonic() + COMMAND_TIMEOUT
-        with selectors.DefaultSelector() as selector:
-            selector.register(process.stdout, selectors.EVENT_READ)
-            while selector.get_map():
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise subprocess.TimeoutExpired(command, COMMAND_TIMEOUT)
-                for key, _ in selector.select(min(remaining, 0.1)):
-                    chunk = os.read(key.fileobj.fileno(), 65536)
-                    if not chunk:
-                        selector.unregister(key.fileobj)
-                        continue
-                    available = MAX_OUTPUT_CHARS - len(retained)
-                    retained.extend(chunk[:available])
-                    truncated |= len(chunk) > available
-            process.wait(timeout=max(0.001, deadline - time.monotonic()))
+        retained, truncated = drain_output(process, command)
         returncode = process.returncode
         status = f"Exit code: {returncode}"
     except subprocess.TimeoutExpired:
@@ -196,13 +224,7 @@ def execute_bash(command: str, label: str = "sandbox $") -> tuple[int, str]:
         status = f"Error executing command: {exc}"
     finally:
         if process is not None:
-            # Also remove background children after a normally completed shell.
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.wait()
-            process.stdout.close()
+            stop_process_group(process)
         if REAP_STRAYS:
             reap_strays()
     output = retained.decode("utf-8", errors="replace").strip() or "(no output)"
@@ -459,7 +481,7 @@ def validate_action(name: str, arguments: str) -> dict:
     """Validate untrusted tool arguments before dispatch."""
     fields = {"run_bash": "command", "finish_task": "summary"}
     if name not in fields:
-        raise ValueError(f"Unknown tool: {name}")
+        raise ValueError(f"Unknown tool: {bounded(str(name), 100)!r}")
     if not isinstance(arguments, str) or len(arguments) > MAX_ACTION_CHARS:
         raise ValueError("Arguments must be a bounded JSON string")
     args = json.loads(arguments)
@@ -510,7 +532,7 @@ def handle_tool_calls(content: str, calls, messages: list[dict], execute, verify
         if completed:
             return True
     except (ValueError, TypeError) as exc:
-        output = f"Invalid action: {exc}"
+        output = bounded(f"Invalid action: {exc}", 1000)
     if len(calls) > 1:
         output = (f"Only the first of {len(calls)} tool calls was considered; "
                   f"issue one action per turn.\n{output}")
@@ -545,7 +567,7 @@ def handle_text_action(content: str, messages: list[dict], execute, verify) -> b
             if completed:
                 return True
     except ValueError as exc:
-        output = f"Invalid action: {exc}"
+        output = bounded(f"Invalid action: {exc}", 1000)
     messages.append({"role": "user", "content": output})
     return False
 

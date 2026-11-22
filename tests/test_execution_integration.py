@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 import types
 import unittest
 from unittest.mock import patch
@@ -72,6 +73,63 @@ class DockerBoundaryTests(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertNotIn('marker-secret', output)
         self.assertIn('PATH=', output)  # Attached output still arrives with --log-driver none.
+
+    def test_legacy_loop_kills_detached_children_after_normal_exit_and_timeout(self):
+        import subprocess
+        script = (
+            "import os, sys, time\n"
+            "sys.path.insert(0, '/opt/sandbox')\n"
+            "import agent\n"
+            "agent.execute_bash(\"setsid sh -c 'sleep 1; touch /tmp/normal' >/dev/null 2>&1 & sleep 0.5\")\n"
+            "agent.COMMAND_TIMEOUT = 1\n"
+            "agent.execute_bash(\"setsid sh -c 'sleep 2; touch /tmp/timeout' >/dev/null 2>&1 & sleep 5\")\n"
+            "time.sleep(3)\n"
+            "print('MARKERS', os.path.exists('/tmp/normal'), os.path.exists('/tmp/timeout'))\n")
+        agent_py = Path(__file__).resolve().parents[1] / 'agent.py'
+        results = {}
+        for reap in ('0', '1'):  # '0' proves the markers would appear without the sweep.
+            result = subprocess.run(
+                ['docker', 'run', '--rm', '--init', '--network', 'none', '--read-only',
+                 '--tmpfs', '/tmp:rw,exec', '--log-driver', 'none',
+                 '--mount', f'type=bind,src={agent_py},dst=/opt/sandbox/agent.py,readonly',
+                 '--env', f'SANDBOX_REAP_STRAYS={reap}', '--env', 'WORKSPACE=/tmp',
+                 '--entrypoint', 'python3', self.record['image'], '-c', script],
+                capture_output=True, text=True, timeout=60)
+            results[reap] = next((line for line in result.stdout.splitlines() if line.startswith('MARKERS')),
+                                 result.stdout + result.stderr)
+        self.assertEqual(results['0'], 'MARKERS True True')
+        self.assertEqual(results['1'], 'MARKERS False False')
+
+    def test_preparation_deadline_cancels_the_build(self):
+        import datetime
+        import subprocess
+        import sandbox
+        started = datetime.datetime.now(datetime.timezone.utc)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'source').mkdir()
+            (root / 'source' / 'a.txt').write_text('x')
+            # A unique command avoids any cached layer for the slow step.
+            manifest = dict(name='slow', source='source', profile='python313', check='true',
+                            prepare=[f'echo {os.urandom(8).hex()} >/dev/null; sleep 120'], prepare_timeout=5)
+            (root / 'manifest.json').write_text(json.dumps(manifest))
+            with self.assertRaises(subprocess.TimeoutExpired):
+                sandbox.prepare(root / 'manifest.json', root / 'state.json')
+            self.assertFalse((root / 'state.json').exists())
+        # BuildKit must cancel the step when the client goes away, not let it run on.
+        for _ in range(20):
+            records = [json.loads(line) for line in subprocess.run(
+                ['docker', 'buildx', 'history', 'ls', '--format', '{{json .}}'],
+                capture_output=True, text=True, check=True).stdout.splitlines()]
+            mine = [r for r in records if r['name'].startswith('sandbox-prepare-')
+                    and datetime.datetime.fromisoformat(r['created_at']) >= started]
+            if mine and mine[0]['status'] != 'Running':
+                break
+            time.sleep(1)
+        self.assertTrue(mine, records[:3])
+        self.assertNotIn(mine[0]['status'], ('Running', 'Completed'))
+        finished = datetime.datetime.fromisoformat(mine[0]['completed_at'])
+        self.assertLess((finished - datetime.datetime.fromisoformat(mine[0]['created_at'])).total_seconds(), 60)
 
     def test_symlink_export_fails_closed(self):
         with Worker(self.record) as worker:
