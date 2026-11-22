@@ -5,7 +5,7 @@ services:
     image: alpine/socat:1.8.1.1@sha256:7f9a06753033f2b7de18edc2353f2c15153413d95a039163c6db270fc7a6c3b0
     restart: unless-stopped
     command: >
-      TCP-LISTEN:1234,fork,reuseaddr
+      TCP-LISTEN:1234,fork,reuseaddr,max-children=16
       TCP:${LLM_HOST:-${LM_STUDIO_HOST:?Set LLM_HOST in .env (see .env.example)}}:${LLM_PORT:-${LM_STUDIO_PORT:-1234}}
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -18,6 +18,10 @@ services:
     security_opt:
       - no-new-privileges:true
     init: true
+    # Sandbox code can open many connections; bound the forwarding processes.
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.5
 
   # Isolated LLM Sandbox: NO internet access, can only reach llm-proxy:1234
   sandbox:
@@ -40,6 +44,8 @@ services:
       - LLM_TIMEOUT=${LLM_TIMEOUT:-120}
       - VERIFY_CMD=${VERIFY_CMD:-}
       - CONTINUOUS=${CONTINUOUS:-0}
+      # One container serves every action; kill processes earlier actions left behind.
+      - SANDBOX_REAP_STRAYS=1
     volumes:
       # Read-only mount for the agent loop script so the LLM cannot overwrite its own harness
       - ./agent.py:/opt/sandbox/agent.py:ro

@@ -132,6 +132,51 @@ class PreparationTests(unittest.TestCase):
         self.assertIn('sha256:example', args)
         self.assertIn('no-new-privileges:true', args)
 
+    def test_every_container_and_build_overrides_all_proxy_keys(self):
+        import execution
+        keys = {'HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY'}
+        keys |= {key.lower() for key in keys}
+        flags = execution.container_isolation_args()
+        self.assertEqual({flags[i + 1] for i, f in enumerate(flags) if f == '--env'}, {k + '=' for k in keys})
+        self.assertEqual(flags[flags.index('--log-driver') + 1], 'none')
+        args = sandbox.proxy_build_args()
+        self.assertEqual({args[i + 1] for i, f in enumerate(args) if f == '--build-arg'}, {k + '=' for k in keys})
+        with_proxy = sandbox.proxy_build_args('http://proxy.internal:3128')
+        self.assertIn('HTTPS_PROXY=http://proxy.internal:3128', with_proxy)
+        self.assertIn('FTP_PROXY=', with_proxy)
+        with_credentials = 'http://' + 'user' + ':' + 'pw' + '@proxy.internal:3128'
+        for bad in (with_credentials, 'socks5://proxy', 'proxy:3128'):
+            with self.subTest(proxy=bad), self.assertRaises(ValueError):
+                sandbox.proxy_build_args(bad)
+        with patch.object(sandbox, 'docker') as docker, patch.object(sandbox.subprocess, 'run'):
+            sandbox.check_image({'image': 'sha256:example', 'config': {'check': 'true'}})
+        self.assertIn('FTP_PROXY=', docker.call_args.args)
+        self.assertIn('--log-driver', docker.call_args.args)
+
+    def test_preparation_build_is_bounded_and_publishes_nothing_on_timeout(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / 'project.json'
+            (Path(directory) / 'source').mkdir()
+            manifest.write_text(json.dumps(dict(name='test', profile='node', source='source',
+                                                check='true', prepare=['npm ci'], prepare_timeout=5)))
+            state = Path(directory) / 'state.json'
+
+            def fake_docker(*args, capture=False, timeout=None):
+                if args[0] == 'build':
+                    self.assertEqual(timeout, 5)
+                    self.assertIn('FTP_PROXY=', args)
+                    raise subprocess.TimeoutExpired('docker build', timeout)
+                return 'sha256:base'
+            with patch.object(sandbox, 'docker', side_effect=fake_docker), \
+                 self.assertRaises(subprocess.TimeoutExpired):
+                sandbox.prepare(manifest, state)
+            self.assertFalse(state.exists())
+        for value in (0, -1, True, '60'):
+            with self.subTest(prepare_timeout=value), self.assertRaises(ValueError):
+                sandbox.validate_fields(dict(name='x', source='s', profile='node', check='true',
+                                             prepare_timeout=value))
+
     def test_preparation_does_not_publish_state_on_failed_check(self):
         with tempfile.TemporaryDirectory() as directory:
             manifest = Path(directory) / 'project.json'

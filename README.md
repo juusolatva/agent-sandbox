@@ -105,13 +105,17 @@ the manifest's directory:
   "memory": "4g",
   "cpus": 2,
   "pids": 256,
-  "timeout": 600
+  "timeout": 600,
+  "prepare_timeout": 1800
 }
 ```
 
 - `prepare` commands run in separate `bash -e` processes. Files persist between
   steps; shell variables and activated environments do not (use absolute or
-  workspace-relative executable paths).
+  workspace-relative executable paths). The whole preparation build is limited to
+  `prepare_timeout` seconds (default `1800`); on expiry the build is cancelled and
+  no state is written. BuildKit does not apply CPU or memory limits to build steps,
+  so set builder-side limits separately if untrusted preparation could exhaust them.
 - Typical per-language offline prep:
   - **Go:** `go mod download`; offline check `GOPROXY=off go test -mod=readonly ./...` (`GOTOOLCHAIN=local` is set in the image).
   - **Rust:** commit `Cargo.lock`, run `cargo fetch --locked`; check `cargo test --frozen`.
@@ -132,6 +136,13 @@ the manifest's directory:
 - **Managed proxy CAs:** pass `--ca /path/to/combined-ca.pem` to `build` or
   `prepare` to mount an extra CA trust bundle as a BuildKit secret (it is never
   copied into the image).
+- **Build proxies:** `build` and `prepare` override every proxy variable Docker
+  would inject from its client configuration (`~/.docker/config.json`), because
+  build steps run project code that could read embedded credentials. Pass
+  `--proxy http://proxy.internal:3128` to use a proxy for build steps; URLs with
+  credentials are rejected. Workers and checks always run with all proxy variables
+  cleared and with Docker logging disabled (`--log-driver none`); the controller
+  keeps its own bounded copy of command output.
 - **C++ ASan/PIE note:** In some high-entropy ASLR environments, older ASan PIE
   executables can hit an allocator/ASLR address conflict (see LLVM
   [D147984](https://reviews.llvm.org/D147984)). The bundled C++ fixture passes
@@ -196,6 +207,8 @@ does not analyze reachability or establish that code is safe.
   single explicit XML actions (`<bash>...</bash>`, `<done>...</done>`) with
   bounded retries. Pass `--text-actions` to skip native tools from the start.
   Ordinary prose, reasoning text, and Markdown code fences are never executed.
+  Only the first tool call in a response is executed, so `--steps` bounds the
+  number of commands; the model is told that further calls were ignored.
 - **Worker isolation:** Each model command runs in a fresh container with
   `--network none`, dropped capabilities, `no-new-privileges:true`, a read-only
   root filesystem, executable `/tmp` tmpfs, CPU/memory/PID limits from the
@@ -319,7 +332,10 @@ original exit followed by exit `0` on candidate).
 For quick single-container sessions backed by a host `./workspace` bind mount,
 `docker-compose.yml` uses a two-container sidecar architecture so the sandbox
 has zero internet or LAN access while still reaching your local inference
-server:
+server. The proxy is limited to 16 concurrent connections and small CPU, memory
+and PID limits. Because one container serves every action, the loop kills all
+processes left by an earlier action (`SANDBOX_REAP_STRAYS=1`) before and after
+each command:
 
 ```text
 ┌─────────────────────────────────────────┐

@@ -58,6 +58,40 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(outcome, agent.Outcome.COMPLETED)
         execute.assert_called_once_with('true')
 
+    def test_only_first_tool_call_per_turn_executes(self):
+        calls = [types.SimpleNamespace(id=f'call-{i}', function=types.SimpleNamespace(
+            name='run_bash', arguments=json.dumps({'command': f'echo {i}'}))) for i in range(50)]
+        flood = types.SimpleNamespace(content='', tool_calls=calls, model_extra={})
+        outcome, execute = self.run_loop([flood])
+        self.assertEqual(outcome, agent.Outcome.EXHAUSTED)
+        execute.assert_called_once_with('echo 0')
+
+    def test_oversized_actions_are_bounded_before_entering_history(self):
+        messages = []
+        huge = json.dumps({'command': 'x' * (agent.MAX_ACTION_CHARS * 4)})
+        call = types.SimpleNamespace(id='c', function=types.SimpleNamespace(name='run_bash', arguments=huge))
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent.handle_tool_calls('y' * agent.MAX_ACTION_CHARS * 4, [call], messages, Mock(), Mock())
+            agent.handle_text_action('z' * agent.MAX_ACTION_CHARS * 4, messages, Mock(), Mock())
+        self.assertLess(len(json.dumps(messages)), agent.MAX_ACTION_CHARS * 3)
+        self.assertIn('Invalid action', messages[1]['content'])
+
+    def test_reap_strays_spares_self_and_ancestors(self):
+        with tempfile.TemporaryDirectory() as proc:
+            # PID 1 (init) -> 7 (agent, self) ; 9 and 12 are strays from earlier actions.
+            for pid, parent in ((1, 0), (7, 1), (9, 1), (12, 9)):
+                Path(proc, str(pid)).mkdir()
+                Path(proc, str(pid), 'stat').write_text(f'{pid} (odd name) x) S {parent} 0 0\n')
+            Path(proc, 'self').mkdir()
+            killed = []
+
+            def kill(pid, signum):
+                if pid in killed:
+                    raise ProcessLookupError
+                killed.append(pid)
+            agent.reap_strays(proc, kill, self_pid=7)
+        self.assertEqual(sorted(killed), [9, 12])
+
     def test_failed_verification_exhausts(self):
         outcome, _ = self.run_loop([message('<done>Reviewed</done>')], (False, 'Tests failed'))
         self.assertEqual(outcome, agent.Outcome.EXHAUSTED)

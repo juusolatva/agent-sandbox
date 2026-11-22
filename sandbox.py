@@ -16,6 +16,7 @@ PROFILES = json.loads((ROOT / 'docker/images.json').read_text())
 BASH = '/bin/bash'
 ADVISORY_ECOSYSTEMS = ('Go', 'PyPI', 'crates.io', 'npm')
 TREE_HASH_VERSION = b'sandbox-tree-v2\0'
+DEFAULT_PREPARE_TIMEOUT = 1800
 
 
 def docker(*args, capture=False, timeout=None):
@@ -30,7 +31,8 @@ def image_id(tag):
 
 def validate_fields(config):
     """Validate a manifest's scalar fields, preparation commands, and resource limits."""
-    allowed = {'name', 'source', 'profile', 'prepare', 'check', 'memory', 'cpus', 'pids', 'timeout', 'verification'}
+    allowed = {'name', 'source', 'profile', 'prepare', 'check', 'memory', 'cpus', 'pids', 'timeout',
+               'prepare_timeout', 'verification'}
     if not isinstance(config, dict) or set(config) - allowed:
         raise ValueError('Project manifest must be an object with documented fields')
     for field in ('name', 'source', 'profile', 'check'):
@@ -41,7 +43,8 @@ def validate_fields(config):
     if not isinstance(config.get('prepare', []), list) or any(
             not isinstance(c, str) or not c.strip() for c in config.get('prepare', [])):
         raise ValueError('prepare must be a list of nonempty shell commands')
-    for field, default in (('cpus', 2), ('pids', 256), ('timeout', 600)):
+    for field, default in (('cpus', 2), ('pids', 256), ('timeout', 600),
+                           ('prepare_timeout', DEFAULT_PREPARE_TIMEOUT)):
         value = config.get(field, default)
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value < 100000:
             raise ValueError(f'{field} must be a positive bounded number')
@@ -127,9 +130,33 @@ def fingerprint(directory):
     return digest.hexdigest()
 
 
-def build(profile, ca=None):
+def proxy_build_args(proxy=None):
+    """Build arguments that replace Docker's client-configured proxies.
+
+    Without explicit values Docker passes its configured proxy URLs, including
+    any embedded credentials, to every RUN step, where project build scripts can
+    read them. An operator proxy must therefore be credential-free.
+    """
+    if proxy is not None:
+        from urllib.parse import urlsplit
+        parts = urlsplit(proxy)
+        if parts.scheme not in ('http', 'https') or not parts.hostname:
+            raise ValueError('--proxy must be an http(s) URL')
+        if parts.username is not None or parts.password is not None:
+            raise ValueError('--proxy must not contain credentials; project build steps can read it')
+    from execution import PROXY_KEYS
+    args = []
+    for key in PROXY_KEYS:
+        value = proxy if proxy and key.lower() in ('http_proxy', 'https_proxy') else ''
+        args.extend(['--build-arg', f'{key}={value}'])
+    return args
+
+
+def build(profile, ca=None, proxy=None):
+    from execution import container_isolation_args
     spec = PROFILES[profile]
-    args = ['build', '--target', spec['target'], '-t', f'agent-sandbox/{profile}:stage2']
+    args = ['build', '--target', spec['target'], '-t', f'agent-sandbox/{profile}:stage2',
+            *proxy_build_args(proxy)]
     for key, value in spec.get('args', {}).items():
         args.extend(['--build-arg', f'{key}={value}'])
     if ca:
@@ -137,11 +164,11 @@ def build(profile, ca=None):
     docker(*args, str(ROOT))
     image = image_id(f'agent-sandbox/{profile}:stage2')
     docker('run', '--rm', '--network', 'none', '--cap-drop', 'ALL',
-           '--security-opt', 'no-new-privileges:true', '--entrypoint', BASH,
-           image, '-e', '-c', spec['probe'])
+           '--security-opt', 'no-new-privileges:true', *container_isolation_args(),
+           '--entrypoint', BASH, image, '-e', '-c', spec['probe'])
 
 
-def prepare(manifest, state, ca=None):
+def prepare(manifest, state, ca=None, proxy=None):
     config, source = load_project(manifest)
     base = image_id(f"agent-sandbox/{config['profile']}:stage2")
     with tempfile.TemporaryDirectory(prefix='sandbox-prepare-') as temporary:
@@ -168,10 +195,11 @@ def prepare(manifest, state, ca=None):
                 [BASH, '-e', '-c', trust + command]))
         (context / 'Dockerfile').write_text('\n'.join(lines) + '\n')
         tag = f'agent-sandbox/prepared:{key}'
-        args = ['build', '-t', tag]
+        args = ['build', '-t', tag, *proxy_build_args(proxy)]
         if ca:
             args.extend(['--secret', f'id=proxy_ca,src={Path(ca).resolve()}'])
-        docker(*args, str(context))
+        # Project build steps are untrusted: bound them. Ending the client cancels the BuildKit job.
+        docker(*args, str(context), timeout=config.get('prepare_timeout', DEFAULT_PREPARE_TIMEOUT))
         image = image_id(tag)
         if image_id(base_tag) != base:
             raise ValueError('Base image changed during preparation; retry')
@@ -189,11 +217,13 @@ def prepare(manifest, state, ca=None):
 
 
 def check_image(record):
+    from execution import container_isolation_args
     config = record['config']
     name = f'sandbox-check-{uuid.uuid4().hex}'
     try:
         docker('run', '--name', name, '--rm', '--init', '--network', 'none', '--cap-drop', 'ALL',
-               '--security-opt', 'no-new-privileges:true', '--memory', str(config.get('memory', '4g')),
+               '--security-opt', 'no-new-privileges:true', *container_isolation_args(),
+               '--memory', str(config.get('memory', '4g')),
                '--cpus', str(config.get('cpus', 2)), '--pids-limit', str(config.get('pids', 256)),
                '--entrypoint', BASH, record['image'], '-e', '-c', config['check'],
                timeout=config.get('timeout', 600))
@@ -216,10 +246,12 @@ def main():
     build_parser = commands.add_parser('build')
     build_parser.add_argument('profile', choices=PROFILES)
     build_parser.add_argument('--ca', help='Optional combined CA bundle for build proxy trust')
+    build_parser.add_argument('--proxy', help='Credential-free http(s) proxy for build steps')
     prepare_parser = commands.add_parser('prepare')
     prepare_parser.add_argument('manifest')
     prepare_parser.add_argument('--state', required=True)
     prepare_parser.add_argument('--ca')
+    prepare_parser.add_argument('--proxy', help='Credential-free http(s) proxy for preparation')
     run_parser = commands.add_parser('run')
     run_parser.add_argument('state')
     run_parser.add_argument('task')
@@ -352,9 +384,9 @@ def run_command(args):
     elif args.command == 'advisories':
         run_advisories_command(args)
     elif args.command == 'build':
-        build(args.profile, args.ca)
+        build(args.profile, args.ca, args.proxy)
     elif args.command == 'prepare':
-        prepare(args.manifest, args.state, args.ca)
+        prepare(args.manifest, args.state, args.ca, args.proxy)
     elif args.command == 'verify':
         run_verify_command(args)
     elif args.command == 'check':

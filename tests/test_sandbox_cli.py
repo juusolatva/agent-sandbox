@@ -45,10 +45,12 @@ class CliTests(unittest.TestCase):
     def test_build_prepare_and_check(self):
         with patch.object(sandbox, 'build') as build:
             self.assertIsNone(self.invoke('build', 'python313', '--ca', 'ca.pem')[0])
-        build.assert_called_once_with('python313', 'ca.pem')
+        build.assert_called_once_with('python313', 'ca.pem', None)
         with patch.object(sandbox, 'prepare') as prepare:
-            self.invoke('prepare', 'examples/go.json', '--state', 'artifacts/go.json')
-        prepare.assert_called_once_with('examples/go.json', 'artifacts/go.json', None)
+            self.invoke('prepare', 'examples/go.json', '--state', 'artifacts/go.json',
+                        '--proxy', 'http://proxy.internal:3128')
+        prepare.assert_called_once_with('examples/go.json', 'artifacts/go.json', None,
+                                        'http://proxy.internal:3128')
         with patch.object(sandbox, 'check_image') as check:
             self.invoke('check', str(self.state))
         check.assert_called_once_with({'image': 'sha256:fixture'})

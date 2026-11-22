@@ -55,6 +55,24 @@ class DockerBoundaryTests(unittest.TestCase):
             self.assertEqual(worker.execute(command)[0], 0)
             self.assertEqual(worker.execute('sleep 1; test ! -e survivor')[0], 0)
 
+    def test_client_configured_proxies_never_reach_workers(self):
+        import subprocess
+        host = subprocess.run(['docker', 'context', 'inspect', '--format', '{{.Endpoints.docker.Host}}'],
+                              capture_output=True, text=True, check=True).stdout.strip()
+        # Built at runtime: a fake credential, but literal userinfo URLs trip secret scanners.
+        userinfo = 'marker-user' + ':' + 'marker-secret'
+        markers = {key: f'http://{userinfo}@proxy.invalid:{port}' for port, key in
+                   enumerate(('httpProxy', 'httpsProxy', 'ftpProxy', 'allProxy'), 1)}
+        markers['noProxy'] = 'marker-secret'
+        with tempfile.TemporaryDirectory() as config:
+            Path(config, 'config.json').write_text(json.dumps({'proxies': {'default': markers}}))
+            with patch.dict(os.environ, {'DOCKER_CONFIG': config, 'DOCKER_HOST': host}), \
+                 Worker(self.record) as worker:
+                code, output = worker.execute('env')
+        self.assertEqual(code, 0, output)
+        self.assertNotIn('marker-secret', output)
+        self.assertIn('PATH=', output)  # Attached output still arrives with --log-driver none.
+
     def test_symlink_export_fails_closed(self):
         with Worker(self.record) as worker:
             self.assertEqual(worker.execute('ln -s /etc/passwd escape')[0], 0)

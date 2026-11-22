@@ -43,6 +43,8 @@ CONTINUOUS = os.environ.get("CONTINUOUS", "0").strip().lower() in {"1", "true", 
 MAX_OUTPUT_CHARS = 8000
 MAX_ACTION_CHARS = 32000
 WORKSPACE = os.environ.get("WORKSPACE", "/home/agent/workspace")
+# Legacy Compose only: kill every process left by earlier actions before the next one.
+REAP_STRAYS = os.environ.get("SANDBOX_REAP_STRAYS", "0").strip().lower() in {"1", "true", "yes"}
 LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "120"))
 
 
@@ -117,8 +119,48 @@ def get_active_model() -> str:
     sys.exit(1)
 
 
+def parent_pid(pid: int, proc: str = "/proc") -> int:
+    """Parent PID from /proc/<pid>/stat (the command name may contain spaces or parens)."""
+    with open(f"{proc}/{pid}/stat") as stream:
+        return int(stream.read().rsplit(")", 1)[1].split()[1])
+
+
+def reap_strays(proc: str = "/proc", kill=os.kill, self_pid: int | None = None) -> int:
+    """Kill every process except this one and its ancestors; return how many were signalled.
+
+    The legacy Compose loop reuses one container for every action, so a command
+    that escapes its process group (setsid, daemonizing) would otherwise keep
+    running into later actions and verification. Only safe inside that
+    container's PID namespace, so it runs only when SANDBOX_REAP_STRAYS is set.
+    """
+    keep, pid = set(), self_pid or os.getpid()
+    while pid > 0 and pid not in keep:
+        keep.add(pid)
+        try:
+            pid = parent_pid(pid, proc)
+        except (OSError, ValueError, IndexError):
+            break
+    total = 0
+    for _ in range(10):  # Repeat: a stray may fork while it is being swept.
+        signalled = 0
+        for entry in os.listdir(proc):
+            if not entry.isdigit() or int(entry) in keep:
+                continue
+            try:
+                kill(int(entry), signal.SIGKILL)
+                signalled += 1
+            except (ProcessLookupError, PermissionError):
+                pass
+        total += signalled
+        if not signalled:
+            break
+    return total
+
+
 def execute_bash(command: str, label: str = "sandbox $") -> tuple[int, str]:
     """Drain merged output with bounded storage and clean up the process group."""
+    if REAP_STRAYS:
+        reap_strays()
     print(f"\n[{label}] {command}")
     retained = bytearray()
     truncated = False
@@ -161,6 +203,8 @@ def execute_bash(command: str, label: str = "sandbox $") -> tuple[int, str]:
                 pass
             process.wait()
             process.stdout.close()
+        if REAP_STRAYS:
+            reap_strays()
     output = retained.decode("utf-8", errors="replace").strip() or "(no output)"
     full_output = f"{status}\n{output}"
     if truncated:
@@ -438,23 +482,39 @@ def dispatch(name: str, args: dict, execute, verify) -> tuple[bool, str]:
     return passed, output
 
 
+def bounded(text, limit: int = MAX_ACTION_CHARS) -> str:
+    """Bound untrusted model text before it enters the retained conversation."""
+    text = text if isinstance(text, str) else ""
+    return text if len(text) <= limit else text[:limit] + "\n[truncated]"
+
+
 def handle_tool_calls(content: str, calls, messages: list[dict], execute, verify) -> bool:
-    """Dispatch native tool calls, appending each result; return True on accepted completion."""
-    messages.append({"role": "assistant", "content": content, "tool_calls": [
-        {"id": c.id, "type": "function", "function": {
-            "name": c.function.name, "arguments": c.function.arguments}} for c in calls]})
-    for call in calls:
-        try:
-            name = call.function.name
-            args = validate_action(name, call.function.arguments)
-            if name == "finish_task" and len(calls) != 1:
-                raise ValueError("finish_task must be the only action in a turn")
-            completed, output = dispatch(name, args, execute, verify)
-            if completed:
-                return True
-        except (ValueError, TypeError) as exc:
-            output = f"Invalid action: {exc}"
-        messages.append({"role": "tool", "tool_call_id": call.id, "content": output})
+    """Dispatch the first native tool call of a turn; return True on accepted completion.
+
+    One action per turn keeps --steps/MAX_ITERATIONS an actual command budget,
+    matching text-action mode. Further calls are dropped from history and
+    reported to the model instead of being executed.
+    """
+    call = calls[0]
+    arguments = call.function.arguments
+    retained = arguments if isinstance(arguments, str) and len(arguments) <= MAX_ACTION_CHARS else "{}"
+    messages.append({"role": "assistant", "content": bounded(content), "tool_calls": [
+        {"id": call.id, "type": "function", "function": {
+            "name": bounded(call.function.name, 100), "arguments": retained}}]})
+    try:
+        name = call.function.name
+        args = validate_action(name, arguments)
+        if name == "finish_task" and len(calls) != 1:
+            raise ValueError("finish_task must be the only action in a turn")
+        completed, output = dispatch(name, args, execute, verify)
+        if completed:
+            return True
+    except (ValueError, TypeError) as exc:
+        output = f"Invalid action: {exc}"
+    if len(calls) > 1:
+        output = (f"Only the first of {len(calls)} tool calls was considered; "
+                  f"issue one action per turn.\n{output}")
+    messages.append({"role": "tool", "tool_call_id": call.id, "content": output})
     return False
 
 
@@ -476,7 +536,7 @@ def handle_text_action(content: str, messages: list[dict], execute, verify) -> b
     """Dispatch a text action, appending feedback; return True on accepted completion."""
     # Only a complete, single tag is an action. Prose, fences and reasoning
     # are never interpreted as commands or implicit success.
-    messages.append({"role": "assistant", "content": content})
+    messages.append({"role": "assistant", "content": bounded(content)})
     output = "Use one explicit run_bash/finish_task call or one <bash>/<done> action."
     try:
         action = parse_text_action(content)
