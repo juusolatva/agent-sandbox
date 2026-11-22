@@ -101,7 +101,11 @@ The items below are proposed future work and are **not** implemented yet:
    size limits, and concurrency caps. Add automated network probes verifying
    isolation from the host gateway, LAN/internet routes, DNS, IPv6, and sibling
    containers, and tighten legacy Compose parity (`docker-compose.prepared.yml`
-   currently uses `read_only: false`).
+   currently uses `read_only: false`). The same work should bound the host
+   controller's inference transport: cap received/decoded response bytes before
+   deserialization and enforce a cancellable wall-clock deadline across each
+   complete request, including model discovery (tested with a slow, oversized
+   fake transport).
 2. **Model-persisted investigation summaries & exact tokenization:**
    Persist the condensed history record to run artifacts and evaluate
    model-written or structured investigation state outside the sliding window.

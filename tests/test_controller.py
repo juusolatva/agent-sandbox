@@ -234,3 +234,113 @@ class TransferTests(unittest.TestCase):
              self.assertRaises(ValueError):
             controller.connect(model='example/model')
         failing.close.assert_called_once()
+
+
+class FakeWorker:
+    """Worker stand-in: records commands; export fails once the workspace is 'unexportable'."""
+    def __init__(self, record, events=None, deadline=None, broken_after=None):
+        self.commands, self.broken_after, self.exports = [], broken_after, 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, command, timeout=None, digest=None, **kwargs):
+        self.commands.append((command, timeout))
+        if digest is not None:
+            digest.update(b'same')
+        return 0, 'same'
+
+    def export(self):
+        self.exports += 1
+        if self.broken_after is not None and self.exports > self.broken_after:
+            raise RuntimeError('Source export failed: special file')
+        return bundle()
+
+
+class ControllerRunTests(unittest.TestCase):
+    record = {'image': 'sha256:fixture', 'source_hash': 's', 'verification_hash': 'v',
+              'config': {'timeout': 450, 'verification': {'source': 'checks', 'command': 'true'}}}
+
+    def run_controller(self, responses, broken_after=None, **kwargs):
+        from unittest.mock import Mock
+        import types
+        workers = []
+
+        def make_worker(*args, **kw):
+            workers.append(FakeWorker(*args, broken_after=broken_after, **kw))
+            return workers[-1]
+        client = Mock()
+        client.with_options.return_value = client
+        client.chat.completions.create.side_effect = responses
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(controller, 'Worker', side_effect=make_worker), \
+             patch.object(controller, 'verify', return_value=(0, 'ok')):
+            code = controller.run(self.record, 'task', directory, model='m', steps=6, timeout=60,
+                                  client=client, text_actions=True, **kwargs)
+            run = next(Path(directory).iterdir())
+            result = json.loads((run / 'result.json').read_text())
+            log = (run / 'controller.log').read_text() if (run / 'controller.log').exists() else ''
+        return code, result, workers, log
+
+    @staticmethod
+    def reply(content):
+        import types
+        message = types.SimpleNamespace(content=content, tool_calls=None, model_dump=lambda: {'content': content})
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(message=message)])
+
+    def test_export_failure_does_not_mask_stall(self):
+        code, result, _, _ = self.run_controller([self.reply('<bash>true</bash>')] * 6, broken_after=1)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(result['stop_reason'], 'repeated_command')
+        self.assertIn('special file', result['export_error'])
+
+    def test_export_failure_after_normal_loop_fails_the_run(self):
+        code, result, _, _ = self.run_controller([self.reply('plain prose')] * 6, broken_after=1)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn('special file', result['error'])
+
+    def test_command_timeout_defaults_to_manifest_and_is_validated(self):
+        _, result, workers, _ = self.run_controller([self.reply('<bash>ls</bash>'), self.reply('<done>x</done>')])
+        self.assertEqual(result['command_timeout'], 450)
+        self.assertEqual(workers[0].commands, [('ls', 450)])
+        _, result, workers, _ = self.run_controller(
+            [self.reply('<bash>ls</bash>'), self.reply('<done>x</done>')], command_timeout=5)
+        self.assertEqual(workers[0].commands, [('ls', 5)])
+        for value in (0, -1, float('nan'), True):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                controller.run(self.record, 'task', '/tmp/unused', command_timeout=value)
+
+    def test_inference_failures_are_recorded(self):
+        import types
+        code, result, _, _ = self.run_controller([types.SimpleNamespace(choices=[])])
+        self.assertNotEqual(code, 0)
+        self.assertIn('no choices', result['error'])
+        from unittest.mock import Mock
+        client = Mock()
+        client.with_options.return_value = client
+        client.chat.completions.create.side_effect = ConnectionError('endpoint refused')
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(controller, 'Worker', side_effect=lambda *a, **k: FakeWorker(*a, **k)), \
+             patch.object(controller, 'verify', return_value=(0, 'ok')):
+            controller.run(self.record, 'task', directory, model='m', steps=2, timeout=60, client=client)
+            run = next(Path(directory).iterdir())
+            result = json.loads((run / 'result.json').read_text())
+            log = (run / 'controller.log').read_text()
+        self.assertIn('endpoint refused', result['error'])
+        self.assertIn('Inference API error', log)  # stderr diagnostics reach controller.log
+
+    def test_fallback_retries_stop_at_the_run_deadline(self):
+        from unittest.mock import Mock
+        client = Mock()
+        client.chat.completions.create.side_effect = [ValueError('peg-native parse failure'),
+                                                      TimeoutError('Run deadline exceeded')]
+        with patch.object(controller.agent.time, 'sleep') as sleep, \
+             patch('sys.stderr'), patch('sys.stdout'):
+            message, fallback = controller.agent.call_llm_resilient(client, 'm', [{'role': 'user', 'content': 'x'}])
+        self.assertIsNone(message)
+        self.assertEqual(client.chat.completions.create.call_count, 2)
+        sleep.assert_not_called()

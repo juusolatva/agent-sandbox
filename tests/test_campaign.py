@@ -5,12 +5,29 @@ from pathlib import Path
 
 import campaign
 
+STATE = json.dumps({'image': 'sha256:fixture', 'verification_hash': 'v',
+                    'config': {'verification': {'source': 'checks', 'command': 'true'}}})
+
+
+def finished_runner(statuses, calls=None):
+    """Runner writing one result.json per attempt with the next status."""
+    statuses = iter(statuses)
+
+    def runner(record, task, artifacts, *args, **kwargs):
+        status = next(statuses)
+        if calls is not None:
+            calls.append(kwargs)
+        (Path(artifacts) / 'run').mkdir()
+        (Path(artifacts) / 'run' / 'result.json').write_text(json.dumps({'status': status}))
+        return {'completed': 0, 'interrupted': 130}.get(status, 1)
+    return runner
+
 
 class CampaignTests(unittest.TestCase):
     def test_resume_retries_and_retains_attempts(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / 'state').write_text('{}')
+            (root / 'state').write_text(STATE)
             (root / 'tasks').write_text(json.dumps(['one', 'one', 'two']))
             directory = root / 'campaign'
             campaign.create(directory, root / 'state', root / 'tasks')
@@ -26,6 +43,75 @@ class CampaignTests(unittest.TestCase):
             data = json.loads((directory / 'campaign.json').read_text())
             self.assertEqual([len(t['attempts']) for t in data['tasks']], [2, 1])
             self.assertTrue((directory / data['tasks'][0]['attempts'][0]['result']).exists())
+
+    def make(self, root, tasks):
+        (root / 'state').write_text(STATE)
+        (root / 'tasks').write_text(json.dumps(tasks))
+        campaign.create(root / 'campaign', root / 'state', root / 'tasks')
+        return root / 'campaign'
+
+    def test_resume_retries_within_run_budget_and_reports_real_stop_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = self.make(Path(tmp), ['only'])
+            reason = campaign.resume(directory, 4, 1, 1, runner=finished_runner(['failed'] * 3),
+                                     max_attempts=3, continue_on_failure=True, stall_limit=5)
+            data = json.loads((directory / 'campaign.json').read_text())
+            self.assertEqual(len(data['tasks'][0]['attempts']), 3)
+            self.assertEqual(reason, 'no_eligible_targets')
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = self.make(Path(tmp), ['one', 'two'])
+            reason = campaign.resume(directory, 1, 1, 1, runner=finished_runner(['failed']),
+                                     continue_on_failure=True)
+            self.assertEqual(reason, 'run_limit')
+
+    def test_interrupted_attempt_stops_campaign_even_with_continue_on_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = self.make(Path(tmp), ['one', 'two'])
+            with self.assertRaises(KeyboardInterrupt):
+                campaign.resume(directory, 5, 1, 1, runner=finished_runner(['interrupted', 'completed']),
+                                continue_on_failure=True)
+            data = json.loads((directory / 'campaign.json').read_text())
+            self.assertEqual(data['stop_reason'], 'interrupted')
+            self.assertEqual([len(t['attempts']) for t in data['tasks']], [1, 0])
+
+    def test_malformed_candidate_is_recorded_as_invalid_report(self):
+        for content in ('{not json', '[]', '"text"'):
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as tmp:
+                directory = self.make(Path(tmp), ['one'])
+
+                def runner(record, task, artifacts, *args, **kwargs):
+                    (Path(artifacts) / 'run').mkdir()
+                    (Path(artifacts) / 'run' / 'result.json').write_text('{"status":"exhausted"}')
+                    (Path(artifacts) / 'run' / 'candidate.json').write_text(content)
+                    return 2
+                self.assertEqual(campaign.resume(directory, 1, 1, 1, runner=runner), 'attempt_exhausted')
+                attempt = json.loads((directory / 'campaign.json').read_text())['tasks'][0]['attempts'][0]
+                self.assertEqual(attempt['status'], 'exhausted')
+                self.assertEqual(attempt['report_status'], 'invalid')
+                self.assertNotIn('candidate_sha256', attempt)
+
+    def test_creation_and_limits_are_validated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'tasks').write_text('["one"]')
+            for state in ('{}', '[]', json.dumps({'image': 'x', 'config': {}, 'verification_hash': 'v'})):
+                (root / 'state').write_text(state)
+                with self.subTest(state=state), self.assertRaises(ValueError):
+                    campaign.create(root / 'campaign', root / 'state', root / 'tasks')
+                self.assertFalse((root / 'campaign').exists())
+            directory = self.make(root, ['one'])
+            for kwargs in ({'stall_limit': 1}, {'stall_limit': 1.5}, {'max_attempts': True}):
+                with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                    campaign.resume(directory, 1, 1, 1, runner=finished_runner([]), **kwargs)
+            with self.assertRaises(ValueError):
+                campaign.resume(directory, 1.0, 1, 1, runner=finished_runner([]))
+
+    def test_command_timeout_is_forwarded_to_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = self.make(Path(tmp), ['one'])
+            calls = []
+            campaign.resume(directory, 1, 1, 1, runner=finished_runner(['completed'], calls), command_timeout=90)
+            self.assertEqual(calls[0]['command_timeout'], 90)
 
     def test_findings_retain_observations_and_reject_external_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -76,7 +162,7 @@ class CampaignTests(unittest.TestCase):
     def test_attempt_limit_prevents_unbounded_retry(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / 'state').write_text('{}')
+            (root / 'state').write_text(STATE)
             (root / 'tasks').write_text('["one"]')
             campaign.create(root / 'campaign', root / 'state', root / 'tasks')
             calls = []
@@ -93,7 +179,7 @@ class CampaignTests(unittest.TestCase):
         from test_investigation import finding_report, report_bundle
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / 'state').write_text('{}')
+            (root / 'state').write_text(STATE)
             (root / 'tasks').write_text(json.dumps([
                 {'task': 'parser', 'scope': 'parse.c', 'priority': 9},
                 {'task': 'decoder', 'scope': 'decode.c'}]))
@@ -127,7 +213,7 @@ class CampaignTests(unittest.TestCase):
         report['findings'].append(second)
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / 'state').write_text('{}')
+            (root / 'state').write_text(STATE)
             (root / 'tasks').write_text(json.dumps(['decoder']))
             directory = root / 'campaign'
             campaign.create(directory, root / 'state', root / 'tasks')
@@ -149,7 +235,7 @@ class CampaignTests(unittest.TestCase):
     def test_state_identity_and_finite_budgets(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / 'state').write_text('{}')
+            (root / 'state').write_text(STATE)
             (root / 'tasks').write_text('["target"]')
             directory = root / 'campaign'
             campaign.create(directory, root / 'state', root / 'tasks')
@@ -163,7 +249,7 @@ class CampaignTests(unittest.TestCase):
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / 'state').write_text('{}')
+            (root / 'state').write_text(STATE)
             (root / 'tasks').write_text('["one", "two"]')
             directory = root / 'campaign'
             campaign.create(directory, root / 'state', root / 'tasks')

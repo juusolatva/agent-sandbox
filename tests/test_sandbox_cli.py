@@ -96,32 +96,52 @@ class CliTests(unittest.TestCase):
         with patch.object(controller, 'run', return_value=2) as run:
             code, _, _ = self.invoke('run', str(self.state), 'Find bugs', '--artifacts', 'out', '--model', 'm',
                                      '--base-url', 'http://127.0.0.1:1234/v1', '--steps', '5',
-                                     '--timeout', '60', '--text-actions')
+                                     '--timeout', '60', '--text-actions', '--command-timeout', '45')
         self.assertEqual(code, 2)
         run.assert_called_once_with({'image': 'sha256:fixture'}, 'Find bugs', 'out', 'http://127.0.0.1:1234/v1',
-                                    'm', 5, 60.0, text_actions=True)
+                                    'm', 5, 60.0, text_actions=True, command_timeout=45.0)
 
     def test_run_defaults(self):
         with patch.object(controller, 'run', return_value=0) as run:
             self.invoke('run', str(self.state), 'task')
         run.assert_called_once_with({'image': 'sha256:fixture'}, 'task', 'artifacts/runs', None, None, 20, 1800.0,
-                                    text_actions=False)
+                                    text_actions=False, command_timeout=None)
 
     def test_campaign_resume_passes_every_limit(self):
         with patch.object(campaign, 'resume', return_value='time_budget') as resume:
             code, stdout, _ = self.invoke('campaign', 'resume', 'camp', '--max-runs', '4', '--max-attempts', '2',
                                           '--budget', '90', '--continue-on-failure', '--stall-limit', '3',
-                                          '--timeout', '30', '--steps', '7', '--model', 'm', '--text-actions')
+                                          '--timeout', '30', '--steps', '7', '--model', 'm', '--text-actions',
+                                          '--command-timeout', '20')
         self.assertEqual(code, 1)
         self.assertIn('Campaign stopped: time_budget', stdout)
         resume.assert_called_once_with('camp', 4, 30.0, 7, None, 'm', True, max_attempts=2, budget=90.0,
-                                       continue_on_failure=True, stall_limit=3)
+                                       continue_on_failure=True, stall_limit=3, command_timeout=20.0)
 
     def test_campaign_resume_succeeds_only_when_all_completed(self):
         with patch.object(campaign, 'resume', return_value='all_completed') as resume:
             self.assertEqual(self.invoke('campaign', 'resume', 'camp', '--max-runs', '1')[0], 0)
         resume.assert_called_once_with('camp', 1, 1800.0, 20, None, None, False, max_attempts=3, budget=None,
-                                       continue_on_failure=False, stall_limit=2)
+                                       continue_on_failure=False, stall_limit=2, command_timeout=None)
+
+    def test_interrupts_and_malformed_state_exit_cleanly(self):
+        with patch.object(controller, 'run', side_effect=KeyboardInterrupt):
+            code, _, stderr = self.invoke('run', str(self.state), 'task')
+        self.assertEqual(code, 130)
+        with patch.object(controller, 'run', side_effect=KeyError('config')):
+            code, _, stderr = self.invoke('run', str(self.state), 'task')
+        self.assertEqual(code, 1)
+        self.assertIn('Malformed input file', stderr)
+
+    def test_bad_agent_environment_does_not_break_unrelated_commands(self):
+        import sys
+        with patch.object(sandbox, 'build') as build, patch.dict(os.environ, {'COMMAND_TIMEOUT': 'abc'}), \
+             patch.dict(sys.modules):
+            sys.modules.pop('agent', None)
+            code, _, _ = self.invoke('build', 'python313')
+            self.assertNotIn('agent', sys.modules)
+        self.assertIsNone(code)
+        build.assert_called_once()
 
     def test_campaign_create_status_review(self):
         with patch.object(campaign, 'create') as create:

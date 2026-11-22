@@ -72,10 +72,18 @@ def parse_target(task):
     return {'task': task['task'], 'scope': scope, 'priority': priority, 'attempts': []}
 
 
+def validate_state(state):
+    """Fail at creation, not mid-campaign, when prepared state lacks protected verification."""
+    if (not isinstance(state, dict) or not isinstance(state.get('image'), str)
+            or not isinstance(state.get('config'), dict) or not state['config'].get('verification')
+            or not isinstance(state.get('verification_hash'), str)):
+        raise ValueError('Prepared state requires image, config.verification, and verification_hash')
+
+
 def create(directory, state_path, tasks_path):
     directory = Path(directory)
-    state_bytes = Path(state_path).read_bytes()
-    state = json.loads(state_bytes)
+    state = json.loads(Path(state_path).read_bytes())
+    validate_state(state)
     tasks = json.loads(Path(tasks_path).read_text())
     if not isinstance(tasks, list) or not tasks or len(tasks) > 1000:
         raise ValueError('Tasks must be a nonempty JSON array of at most 1000 targets')
@@ -96,18 +104,20 @@ def collect_report(directory, attempt):
     candidate = run.parent / 'candidate.json'
     if not candidate.exists():
         return {'status': 'missing', 'findings': []}
+    from execution import transfer
+    bundle = None
     try:
-        bundle = json.loads(candidate.read_text())
-        evidence = str(candidate.relative_to(directory))
-        report = import_report(bundle, evidence)
+        with candidate.open('rb') as stream:
+            bundle = transfer.load(stream)
+        report = import_report(bundle, str(candidate.relative_to(directory)))
     except (ValueError, TypeError, RecursionError) as exc:
         report = {'status': 'invalid', 'error': str(exc)[:1000], 'findings': []}
     save(run.parent / PROPOSALS_FILE, report)
     attempt['proposals'] = str((run.parent / PROPOSALS_FILE).relative_to(directory))
-    # Exclude report wording from progress detection: only project changes count.
-    bundle = json.loads(candidate.read_text())
-    bundle.pop(REPORT_NAME, None)
-    attempt['candidate_sha256'] = hashlib.sha256(json.dumps(bundle, sort_keys=True).encode()).hexdigest()
+    if bundle is not None:
+        # Exclude report wording from progress detection: only project changes count.
+        project = {name: entry for name, entry in bundle.items() if name != REPORT_NAME}
+        attempt['candidate_sha256'] = hashlib.sha256(json.dumps(project, sort_keys=True).encode()).hexdigest()
     return report
 
 
@@ -184,11 +194,24 @@ def final_stop_reason(campaign, max_attempts):
     return campaign['stop_reason']
 
 
+def next_target(campaign, max_attempts):
+    """Least-attempted eligible target first, then operator priority and stable input order."""
+    eligible = [(index, item) for index, item in enumerate(campaign['tasks']) if is_eligible(item, max_attempts)]
+    if not eligible:
+        return None
+    return min(eligible, key=lambda pair: (len(pair[1]['attempts']), -pair[1].get('priority', 0), pair[0]))[0]
+
+
 def resume(directory, max_runs, run_timeout, steps, base_url=None, model=None, text_actions=False,
-           runner=None, max_attempts=3, budget=None, continue_on_failure=False, stall_limit=2):
+           runner=None, max_attempts=3, budget=None, continue_on_failure=False, stall_limit=2,
+           command_timeout=None):
+    if any(type(v) is not int for v in (max_runs, steps, max_attempts, stall_limit)):
+        raise ValueError('Run, step, attempt, and stall limits must be integers')
+    if stall_limit < 2:
+        raise ValueError('Stall limit must be at least 2: it compares candidates across attempts')
     budget = max_runs * run_timeout if budget is None else budget
-    if any(not math.isfinite(v) or v <= 0 for v in
-           (max_runs, run_timeout, steps, max_attempts, budget, stall_limit)):
+    if any(isinstance(v, bool) or not math.isfinite(v) or v <= 0 for v in
+           (max_runs, run_timeout, steps, max_attempts, budget)):
         raise ValueError('Campaign limits must be finite and positive')
     directory = Path(directory)
     # Exclusive lock prevents concurrent controllers from claiming the same task.
@@ -202,23 +225,21 @@ def resume(directory, max_runs, run_timeout, steps, base_url=None, model=None, t
 
         def launch(item, attempt_dir, remaining):
             prompt = item['task'] + '\nAssigned scope: ' + item.get('scope', item['task']) + REPORT_PROMPT
+            extra = {} if command_timeout is None else {'command_timeout': command_timeout}
             return runner(record, prompt, str(attempt_dir), base_url, model, steps, min(run_timeout, remaining),
-                          text_actions=text_actions)
+                          text_actions=text_actions, **extra)
 
         mark_stale_attempts(campaign)
-        campaign['stop_reason'] = 'run_limit'
+        campaign['stop_reason'] = 'running'
         campaign['last_budget'] = {'runs': max_runs, 'seconds': budget, 'steps_per_run': steps,
                                    'max_attempts': max_attempts, 'stall_limit': stall_limit}
         save(path, campaign)
         deadline = time.monotonic() + budget
-        # Least-attempted targets first, then operator priority and stable input order.
-        queue = sorted(enumerate(campaign['tasks']), key=lambda pair:
-            (len(pair[1]['attempts']), -pair[1].get('priority', 0), pair[0]))
         count = 0
-        for index, item in queue:
-            if not is_eligible(item, max_attempts):
-                continue
+        # Re-select after every attempt so retries use the remaining run budget.
+        while (index := next_target(campaign, max_attempts)) is not None:
             if count >= max_runs:
+                campaign['stop_reason'] = 'run_limit'
                 break
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -226,6 +247,11 @@ def resume(directory, max_runs, run_timeout, steps, base_url=None, model=None, t
                 break
             attempt = run_attempt(directory, path, campaign, index, launch, remaining, stall_limit)
             count += 1
+            if attempt['status'] == 'interrupted':
+                # The controller converts Ctrl-C/SIGTERM into an interrupted run; stop everything.
+                campaign['stop_reason'] = 'interrupted'
+                save(path, campaign)
+                raise KeyboardInterrupt
             if attempt['status'] != 'completed' and not continue_on_failure:
                 campaign['stop_reason'] = 'attempt_' + attempt['status']
                 break

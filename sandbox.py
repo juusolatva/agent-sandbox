@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -48,6 +49,11 @@ def validate_fields(config):
         value = config.get(field, default)
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value < 100000:
             raise ValueError(f'{field} must be a positive bounded number')
+    if not isinstance(config.get('pids', 256), int):
+        raise ValueError('pids must be an integer')
+    memory = config.get('memory', '4g')
+    if not isinstance(memory, str) or not re.fullmatch(r'[1-9][0-9]{0,5}[bkmg]?', memory.lower()):
+        raise ValueError('memory must be a Docker memory size such as "4g" or "512m"')
 
 
 def validate_verification(base, verification):
@@ -234,12 +240,16 @@ def check_image(record):
 
 
 
+def interrupt(signum, frame):
+    """Unwind cleanup (containers, volumes, campaign state) on SIGTERM as on Ctrl-C."""
+    raise KeyboardInterrupt
+
+
 def main():
     if sys.version_info < MIN_PYTHON:
         raise SystemExit(f'sandbox.py requires Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]} or newer; '
                          f'found {sys.version_info[0]}.{sys.version_info[1]}')
     import signal
-    from agent import interrupt
     signal.signal(signal.SIGTERM, interrupt)
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
@@ -261,6 +271,8 @@ def main():
     run_parser.add_argument('--model', default=os.environ.get('LLM_MODEL'))
     run_parser.add_argument('--steps', type=int, default=20)
     run_parser.add_argument('--timeout', type=float, default=1800)
+    run_parser.add_argument('--command-timeout', type=float,
+                            help='Seconds per model command (default: the manifest timeout)')
     campaign_parser = commands.add_parser('campaign')
     campaign_commands = campaign_parser.add_subparsers(dest='campaign_command', required=True)
     campaign_create = campaign_commands.add_parser('create')
@@ -296,6 +308,8 @@ def main():
     campaign_run.add_argument('--model', default=os.environ.get('LLM_MODEL'))
     campaign_run.add_argument('--base-url', default=os.environ.get('OPENAI_BASE_URL'))
     campaign_run.add_argument('--text-actions', action='store_true')
+    campaign_run.add_argument('--command-timeout', type=float,
+                              help='Seconds per model command (default: the manifest timeout)')
     verify_parser = commands.add_parser('verify')
     verify_parser.add_argument('state')
     verify_parser.add_argument('--candidate')
@@ -315,8 +329,13 @@ def main():
     args = parser.parse_args()
     try:
         run_command(args)
+    except KeyboardInterrupt:
+        parser.exit(130, 'Interrupted\n')
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         parser.exit(exc.returncode if isinstance(exc, subprocess.CalledProcessError) else 1, f'{exc}\n')
+    except (KeyError, TypeError, AttributeError) as exc:
+        # Usually a hand-edited or truncated state, campaign, or snapshot file.
+        parser.exit(1, f'Malformed input file: {type(exc).__name__}: {exc}\n')
 
 
 def run_advisories_command(args):
@@ -352,7 +371,7 @@ def run_campaign_command(args):
         reason = campaign.resume(args.directory, args.max_runs, args.timeout, args.steps,
                                  args.base_url, args.model, args.text_actions, max_attempts=args.max_attempts,
                                  budget=args.budget, continue_on_failure=args.continue_on_failure,
-                                 stall_limit=args.stall_limit)
+                                 stall_limit=args.stall_limit, command_timeout=args.command_timeout)
         print(f'Campaign stopped: {reason}')
         raise SystemExit(0 if reason == 'all_completed' else 1)
 
@@ -374,7 +393,8 @@ def run_controller_command(args):
     from controller import run
     record = json.loads(Path(args.state).read_text())
     outcome = run(record, args.task, args.artifacts, args.base_url,
-                  args.model, args.steps, args.timeout, text_actions=args.text_actions)
+                  args.model, args.steps, args.timeout, text_actions=args.text_actions,
+                  command_timeout=args.command_timeout)
     raise SystemExit(outcome)
 
 
