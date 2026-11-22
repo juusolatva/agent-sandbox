@@ -130,6 +130,27 @@ class TransferTests(unittest.TestCase):
                  self.assertRaises(ValueError):
                 controller.transfer.export(root)
 
+    def test_stat_failure_during_export_is_a_named_value_error(self):
+        import os
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'vanishing.py').write_text('x')
+            real_stat = os.stat
+
+            def failing_stat(name, *args, **kwargs):
+                if name == 'vanishing.py':
+                    raise FileNotFoundError(2, 'No such file or directory')
+                return real_stat(name, *args, **kwargs)
+            with patch.object(controller.transfer.os, 'stat', side_effect=failing_stat), \
+                 self.assertRaisesRegex(ValueError, 'Cannot stat vanishing.py'):
+                controller.transfer.export(root)
+
+    def test_patch_failure_reports_git_stderr(self):
+        failed = subprocess.CompletedProcess([], 128, b'', b'fatal: example failure\n')
+        with patch.object(controller.subprocess, 'run', return_value=failed), \
+             self.assertRaisesRegex(RuntimeError, 'fatal: example failure'):
+            controller.patch_bytes(bundle(), bundle(b'new'))
+
     def test_export_keeps_stderr_out_of_bundle_and_rejects_truncation(self):
         worker = execution.Worker({'image': 'sha256:fixture', 'config': {}})
 

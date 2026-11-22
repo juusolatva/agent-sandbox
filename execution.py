@@ -18,6 +18,45 @@ transfer = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(transfer)
 
 
+class _Retained:
+    """Bounded copies of a process's stdout and (optionally separate) stderr."""
+
+    def __init__(self, limit, digest):
+        self.limit = limit
+        self.update = digest.update if digest is not None else (lambda chunk: None)
+        self.output = bytearray()
+        self.errors = bytearray()
+        self.truncated = False
+
+    def add_output(self, chunk):
+        self.update(chunk)
+        available = self.limit - len(self.output)
+        self.output.extend(chunk[:available])
+        self.truncated |= len(chunk) > available
+
+    def add_errors(self, chunk):
+        self.errors.extend(chunk[:8000 - len(self.errors)])
+
+
+def _drain(process, retained, argv, timeout, deadline):
+    """Read every stream until EOF, raising TimeoutExpired at the deadline."""
+    with selectors.DefaultSelector() as selector:
+        selector.register(process.stdout, selectors.EVENT_READ, retained.add_output)
+        if process.stderr is not None:
+            selector.register(process.stderr, selectors.EVENT_READ, retained.add_errors)
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(argv, timeout)
+            for key, _ in selector.select(min(remaining, .1)):
+                chunk = os.read(key.fileobj.fileno(), 65536)
+                if chunk:
+                    key.data(chunk)
+                else:
+                    selector.unregister(key.fileobj)
+        process.wait(timeout=max(.001, deadline - time.monotonic()))
+
+
 def bounded_process(argv, timeout, limit=8000, input_bytes=None, digest=None, details=None):
     """Drain arbitrary output with bounded retention and a wall-clock deadline.
 
@@ -27,10 +66,7 @@ def bounded_process(argv, timeout, limit=8000, input_bytes=None, digest=None, de
     stored (bounded) under details['errors'], and details['truncated'] records
     whether stdout exceeded the limit, so machine-readable output stays intact.
     """
-    update = digest.update if digest is not None else (lambda chunk: None)
-    output = bytearray()
-    errors = bytearray()
-    truncated = False
+    retained = _Retained(limit, digest)
     separate = details is not None
     with tempfile.TemporaryFile() as incoming:
         if input_bytes is not None:
@@ -39,32 +75,12 @@ def bounded_process(argv, timeout, limit=8000, input_bytes=None, digest=None, de
         process = subprocess.Popen(argv, stdin=incoming, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE if separate else subprocess.STDOUT,
                                    start_new_session=True)
-        deadline = time.monotonic() + timeout
         try:
-            with selectors.DefaultSelector() as selector:
-                selector.register(process.stdout, selectors.EVENT_READ)
-                if separate:
-                    selector.register(process.stderr, selectors.EVENT_READ)
-                while selector.get_map():
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise subprocess.TimeoutExpired(argv, timeout)
-                    for key, _ in selector.select(min(remaining, .1)):
-                        chunk = os.read(key.fileobj.fileno(), 65536)
-                        if not chunk:
-                            selector.unregister(key.fileobj)
-                        elif key.fileobj is process.stderr:
-                            errors.extend(chunk[:8000 - len(errors)])
-                        else:
-                            update(chunk)
-                            available = limit - len(output)
-                            output.extend(chunk[:available])
-                            truncated |= len(chunk) > available
-                process.wait(timeout=max(.001, deadline - time.monotonic()))
+            _drain(process, retained, argv, timeout, time.monotonic() + timeout)
             code = process.returncode
         except subprocess.TimeoutExpired:
             code = 124
-            output.extend(b'\n[execution deadline exceeded]')
+            retained.output.extend(b'\n[execution deadline exceeded]')
         finally:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
@@ -75,10 +91,10 @@ def bounded_process(argv, timeout, limit=8000, input_bytes=None, digest=None, de
             if separate:
                 process.stderr.close()
     if separate:
-        details.update(errors=errors.decode('utf-8', errors='replace'), truncated=truncated)
-    elif truncated:
-        output.extend(b'\n[output truncated]')
-    return code, output.decode('utf-8', errors='replace')
+        details.update(errors=retained.errors.decode('utf-8', errors='replace'), truncated=retained.truncated)
+    elif retained.truncated:
+        retained.output.extend(b'\n[output truncated]')
+    return code, retained.output.decode('utf-8', errors='replace')
 
 
 class Worker:

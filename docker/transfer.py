@@ -79,40 +79,46 @@ def walk(root):
         os.close(root_fd)
 
 
-def _walk(directory_fd, prefix):
+def _checked(operation, description, *args, **kwargs):
+    """Run an OS call, turning OSError into a ValueError that names the path."""
     try:
-        names = sorted(os.listdir(directory_fd))
+        return operation(*args, **kwargs)
     except OSError as exc:
-        raise ValueError(f'Cannot read directory {prefix.as_posix() or "."}: {exc.strerror}') from exc
+        raise ValueError(f'{description}: {exc.strerror}') from exc
+
+
+def _walk(directory_fd, prefix):
+    names = sorted(_checked(os.listdir, f'Cannot read directory {prefix.as_posix() or "."}', directory_fd))
     for name in names:
         if skipped(name):
             continue
         relative = prefix / name
-        mode = os.stat(name, dir_fd=directory_fd, follow_symlinks=False).st_mode
+        mode = _checked(os.stat, f'Cannot stat {relative}', name, dir_fd=directory_fd,
+                        follow_symlinks=False).st_mode
         if stat.S_ISDIR(mode):
-            try:
-                child = os.open(name, DIRECTORY_FLAGS, dir_fd=directory_fd)
-            except OSError as exc:
-                raise ValueError(f'Cannot open directory {relative}: {exc.strerror}') from exc
+            child = _checked(os.open, f'Cannot open directory {relative}', name, DIRECTORY_FLAGS,
+                             dir_fd=directory_fd)
             try:
                 yield relative, None
                 yield from _walk(child, relative)
             finally:
                 os.close(child)
         elif stat.S_ISREG(mode):
-            try:
-                fd = os.open(name, FILE_FLAGS, dir_fd=directory_fd)
-            except OSError as exc:
-                raise ValueError(f'Cannot open file {relative}: {exc.strerror}') from exc
-            try:
-                info = os.fstat(fd)
-                if not stat.S_ISREG(info.st_mode):
-                    raise ValueError(f'File changed type during traversal: {relative}')
-                yield relative, (fd, info)
-            finally:
-                os.close(fd)
+            yield from _open_regular(directory_fd, name, relative)
         else:
             raise ValueError(f'Only regular files and directories are supported: {relative}')
+
+
+def _open_regular(directory_fd, name, relative):
+    """Yield (relative, (fd, stat)) for a file that is still regular once opened."""
+    fd = _checked(os.open, f'Cannot open file {relative}', name, FILE_FLAGS, dir_fd=directory_fd)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(f'File changed type during traversal: {relative}')
+        yield relative, (fd, info)
+    finally:
+        os.close(fd)
 
 
 def read_regular(fd, info, budget):

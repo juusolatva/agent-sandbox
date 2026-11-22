@@ -55,7 +55,8 @@ def patch_bytes(before, after):
         result = subprocess.run(GIT_DIFF, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 env=environment, timeout=30)
         if result.returncode not in (0, 1):
-            raise RuntimeError('Could not generate patch')
+            detail = result.stderr.decode('utf-8', errors='replace').strip()[-1000:]
+            raise RuntimeError(f'Could not generate patch: {detail}')
         return result.stdout
 
 
