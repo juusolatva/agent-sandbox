@@ -280,10 +280,36 @@ class AdvisoryTests(unittest.TestCase):
         self.fetch('Go', 'PyPI')
         before = advisories.database_path(self.snapshot, 'Go').read_bytes()
         updated = database_bytes([{**OSV_RECORD, 'id': 'GO-NEW'}])
+        partly_corrupt = opener({'Go': updated, 'PyPI': b'not a zip'})
         with self.assertRaises(zipfile.BadZipFile):
-            advisories.fetch(self.snapshot, ('Go', 'PyPI'), opener({'Go': updated, 'PyPI': b'not a zip'}))
+            advisories.fetch(self.snapshot, ('Go', 'PyPI'), partly_corrupt)
         self.assertEqual(advisories.database_path(self.snapshot, 'Go').read_bytes(), before)
         self.assertEqual(advisories.verify_snapshot(self.snapshot)[2], {})
+
+    def test_repeated_ecosystem_downloads_once(self):
+        self.fetch('Go')
+        calls = []
+        payload = database_bytes([{**OSV_RECORD, 'id': 'GO-NEW'}])
+
+        def counting(url, timeout=None):
+            calls.append(url)
+            return Response(payload)
+        metadata = advisories.fetch(self.snapshot, ('Go', 'Go'), counting)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(metadata['databases']['Go']['sha256'], hashlib.sha256(payload).hexdigest())
+        self.assertEqual(advisories.verify_snapshot(self.snapshot)[2], {})
+
+    def test_freshness_compares_exact_age_not_rounded_display(self):
+        self.fetch('Go')
+        fetched = datetime.datetime.fromisoformat(
+            advisories.load_metadata(self.snapshot)['databases']['Go']['fetched_at'])
+        clean = lambda *a: {'status': 'scanned', 'vulnerabilities': []}
+        # 7.004 days displays as 7.0 but is past a 7-day limit.
+        report = self.report(clean, now=fetched + datetime.timedelta(days=7.004))
+        self.assertEqual(report['snapshot']['database_age_days']['Go'], 7.0)
+        self.assertTrue(report['snapshot']['stale'])
+        just_fetched = self.report(clean, max_age_days=0, now=fetched + datetime.timedelta(minutes=5))
+        self.assertTrue(just_fetched['snapshot']['stale'])
 
     def test_fetch_creates_missing_parent_directories(self):
         nested = self.directory / 'a' / 'b' / 'snapshot'

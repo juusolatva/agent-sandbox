@@ -154,16 +154,40 @@ class RunSession:
         return msg, fallback
 
 
-def run(record, task, artifact_root, base_url=None, model=None, steps=20, timeout=1800,
-        client=None, text_actions=False, command_timeout=None):
-    if steps <= 0 or timeout <= 0:
-        raise ValueError('Stage 3 requires positive step and run-time limits')
-    # Model commands default to the manifest timeout that prepare/check/verify already use.
+def validated_command_timeout(record, command_timeout):
+    """Model commands default to the manifest timeout that prepare/check/verify already use."""
     if command_timeout is None:
         command_timeout = record['config'].get('timeout', 600)
     if isinstance(command_timeout, bool) or not isinstance(command_timeout, (int, float)) \
             or not math.isfinite(command_timeout) or command_timeout <= 0:
         raise ValueError('Command timeout must be a positive number of seconds')
+    return command_timeout
+
+
+def run_loop(session, client, model, task, steps, before, result):
+    """Run the agent loop with logs captured, always retaining the candidate snapshot."""
+    evidence, worker = session.evidence, session.worker
+    with (evidence.path / 'controller.log').open('w') as log, \
+            contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
+        try:
+            outcome = agent.run_agent_loop(client, model, task, execute=session.execute,
+                                           verify=session.gate, infer=session.infer, steps=steps)
+        except BaseException:
+            # Retain what we can without replacing the original stop reason (Stalled, Ctrl-C).
+            try:
+                save_candidate(worker, before, evidence)
+            except Exception as exc:
+                result['export_error'] = str(exc)[:4000]
+            raise
+        save_candidate(worker, before, evidence)
+    return outcome
+
+
+def run(record, task, artifact_root, base_url=None, model=None, steps=20, timeout=1800,
+        client=None, text_actions=False, command_timeout=None):
+    if steps <= 0 or timeout <= 0:
+        raise ValueError('Stage 3 requires positive step and run-time limits')
+    command_timeout = validated_command_timeout(record, command_timeout)
     if not record['config'].get('verification') or not record.get('verification_hash'):
         raise ValueError('Prepare this project with protected verification before running the controller')
     evidence = Evidence(artifact_root)
@@ -192,19 +216,7 @@ def run(record, task, artifact_root, base_url=None, model=None, steps=20, timeou
             evidence.save('original.json', before)
 
             session = RunSession(record, worker, evidence, deadline, result, text_actions, command_timeout)
-            with (evidence.path / 'controller.log').open('w') as log, \
-                    contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
-                try:
-                    outcome = agent.run_agent_loop(client, model, task, execute=session.execute,
-                                                   verify=session.gate, infer=session.infer, steps=steps)
-                except BaseException:
-                    # Retain what we can without replacing the original stop reason (Stalled, Ctrl-C).
-                    try:
-                        save_candidate(worker, before, evidence)
-                    except Exception as exc:
-                        result['export_error'] = str(exc)[:4000]
-                    raise
-                save_candidate(worker, before, evidence)
+            outcome = run_loop(session, client, model, task, steps, before, result)
         result['status'] = outcome.name.lower()
     except KeyboardInterrupt:
         outcome = agent.Outcome.INTERRUPTED

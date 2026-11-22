@@ -67,9 +67,9 @@ class CampaignTests(unittest.TestCase):
     def test_interrupted_attempt_stops_campaign_even_with_continue_on_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = self.make(Path(tmp), ['one', 'two'])
+            runner = finished_runner(['interrupted', 'completed'])
             with self.assertRaises(KeyboardInterrupt):
-                campaign.resume(directory, 5, 1, 1, runner=finished_runner(['interrupted', 'completed']),
-                                continue_on_failure=True)
+                campaign.resume(directory, 5, 1, 1, runner=runner, continue_on_failure=True)
             data = json.loads((directory / 'campaign.json').read_text())
             self.assertEqual(data['stop_reason'], 'interrupted')
             self.assertEqual([len(t['attempts']) for t in data['tasks']], [1, 0])
@@ -100,11 +100,12 @@ class CampaignTests(unittest.TestCase):
                     campaign.create(root / 'campaign', root / 'state', root / 'tasks')
                 self.assertFalse((root / 'campaign').exists())
             directory = self.make(root, ['one'])
+            unused = finished_runner([])
             for kwargs in ({'stall_limit': 1}, {'stall_limit': 1.5}, {'max_attempts': True}):
                 with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
-                    campaign.resume(directory, 1, 1, 1, runner=finished_runner([]), **kwargs)
+                    campaign.resume(directory, 1, 1, 1, runner=unused, **kwargs)
             with self.assertRaises(ValueError):
-                campaign.resume(directory, 1.0, 1, 1, runner=finished_runner([]))
+                campaign.resume(directory, 1.0, 1, 1, runner=unused)
 
     def test_command_timeout_is_forwarded_to_runs(self):
         with tempfile.TemporaryDirectory() as tmp:

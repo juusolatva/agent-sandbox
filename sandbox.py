@@ -44,6 +44,11 @@ def validate_fields(config):
     if not isinstance(config.get('prepare', []), list) or any(
             not isinstance(c, str) or not c.strip() for c in config.get('prepare', [])):
         raise ValueError('prepare must be a list of nonempty shell commands')
+    validate_resources(config)
+
+
+def validate_resources(config):
+    """Validate numeric limits and the Docker memory size."""
     for field, default in (('cpus', 2), ('pids', 256), ('timeout', 600),
                            ('prepare_timeout', DEFAULT_PREPARE_TIMEOUT)):
         value = config.get(field, default)
@@ -52,7 +57,7 @@ def validate_fields(config):
     if not isinstance(config.get('pids', 256), int):
         raise ValueError('pids must be an integer')
     memory = config.get('memory', '4g')
-    if not isinstance(memory, str) or not re.fullmatch(r'[1-9][0-9]{0,5}[bkmg]?', memory.lower()):
+    if not isinstance(memory, str) or not re.fullmatch(r'[1-9]\d{0,5}[bkmg]?', memory.lower()):
         raise ValueError('memory must be a Docker memory size such as "4g" or "512m"')
 
 

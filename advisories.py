@@ -80,6 +80,7 @@ def download(ecosystem, destination, opener=urllib.request.urlopen):
 
 def fetch(directory, ecosystems=ECOSYSTEMS, opener=urllib.request.urlopen):
     """Download databases into directory and write verified metadata last."""
+    ecosystems = tuple(dict.fromkeys(ecosystems))  # Repeats would share one staged file.
     unknown = sorted(set(ecosystems) - set(ECOSYSTEMS))
     if unknown or not ecosystems:
         raise ValueError(f'Unsupported ecosystems: {unknown or "none selected"}')
@@ -287,7 +288,7 @@ def database_ages(metadata, now=None):
     ages = {}
     for ecosystem, recorded in metadata['databases'].items():
         stamp = recorded.get('fetched_at') if isinstance(recorded, dict) else None
-        ages[ecosystem] = round(snapshot_age_days({'fetched_at': stamp}, now), 2) if stamp else None
+        ages[ecosystem] = snapshot_age_days({'fetched_at': stamp}, now) if stamp else None
     return ages
 
 
@@ -310,7 +311,9 @@ def build_report(root, lockfiles, directory, scan=scan_lockfile, max_age_days=DE
                      'reason': problems.get(ecosystem) or f'snapshot has no {ecosystem} database'}
         checks.append({'lockfile': relative, 'ecosystem': ecosystem, **check})
     return {'snapshot': {'directory': str(directory), 'fetched_at': metadata['fetched_at'],
-                         'age_days': round(age, 2), 'database_age_days': ages,
+                         'age_days': round(age, 2),
+                         # Compared unrounded above; rounded only for display.
+                         'database_age_days': {e: None if a is None else round(a, 2) for e, a in ages.items()},
                          'stale': bool(stale_databases), 'stale_databases': stale_databases,
                          'databases': metadata['databases'], 'problems': problems},
             'discovery': list(discovery),

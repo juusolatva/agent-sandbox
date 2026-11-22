@@ -114,7 +114,7 @@ def collect_report(directory, attempt):
         report = {'status': 'invalid', 'error': str(exc)[:1000], 'findings': []}
     save(run.parent / PROPOSALS_FILE, report)
     attempt['proposals'] = str((run.parent / PROPOSALS_FILE).relative_to(directory))
-    if bundle is not None:
+    if isinstance(bundle, dict):
         # Exclude report wording from progress detection: only project changes count.
         project = {name: entry for name, entry in bundle.items() if name != REPORT_NAME}
         attempt['candidate_sha256'] = hashlib.sha256(json.dumps(project, sort_keys=True).encode()).hexdigest()
@@ -202,9 +202,8 @@ def next_target(campaign, max_attempts):
     return min(eligible, key=lambda pair: (len(pair[1]['attempts']), -pair[1].get('priority', 0), pair[0]))[0]
 
 
-def resume(directory, max_runs, run_timeout, steps, base_url=None, model=None, text_actions=False,
-           runner=None, max_attempts=3, budget=None, continue_on_failure=False, stall_limit=2,
-           command_timeout=None):
+def validated_budget(max_runs, run_timeout, steps, max_attempts, budget, stall_limit):
+    """Check campaign limits and return the overall time budget in seconds."""
     if any(type(v) is not int for v in (max_runs, steps, max_attempts, stall_limit)):
         raise ValueError('Run, step, attempt, and stall limits must be integers')
     if stall_limit < 2:
@@ -213,6 +212,38 @@ def resume(directory, max_runs, run_timeout, steps, base_url=None, model=None, t
     if any(isinstance(v, bool) or not math.isfinite(v) or v <= 0 for v in
            (max_runs, run_timeout, steps, max_attempts, budget)):
         raise ValueError('Campaign limits must be finite and positive')
+    return budget
+
+
+def run_targets(directory, path, campaign, launch, deadline, max_runs, max_attempts,
+                stall_limit, continue_on_failure):
+    """Run attempts until a limit stops the campaign, setting its stop_reason."""
+    count = 0
+    # Re-select after every attempt so retries use the remaining run budget.
+    while (index := next_target(campaign, max_attempts)) is not None:
+        if count >= max_runs:
+            campaign['stop_reason'] = 'run_limit'
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            campaign['stop_reason'] = 'time_budget'
+            return
+        attempt = run_attempt(directory, path, campaign, index, launch, remaining, stall_limit)
+        count += 1
+        if attempt['status'] == 'interrupted':
+            # The controller converts Ctrl-C/SIGTERM into an interrupted run; stop everything.
+            campaign['stop_reason'] = 'interrupted'
+            save(path, campaign)
+            raise KeyboardInterrupt
+        if attempt['status'] != 'completed' and not continue_on_failure:
+            campaign['stop_reason'] = 'attempt_' + attempt['status']
+            return
+
+
+def resume(directory, max_runs, run_timeout, steps, base_url=None, model=None, text_actions=False,
+           runner=None, max_attempts=3, budget=None, continue_on_failure=False, stall_limit=2,
+           command_timeout=None):
+    budget = validated_budget(max_runs, run_timeout, steps, max_attempts, budget, stall_limit)
     directory = Path(directory)
     # Exclusive lock prevents concurrent controllers from claiming the same task.
     with locked(directory):
@@ -234,27 +265,8 @@ def resume(directory, max_runs, run_timeout, steps, base_url=None, model=None, t
         campaign['last_budget'] = {'runs': max_runs, 'seconds': budget, 'steps_per_run': steps,
                                    'max_attempts': max_attempts, 'stall_limit': stall_limit}
         save(path, campaign)
-        deadline = time.monotonic() + budget
-        count = 0
-        # Re-select after every attempt so retries use the remaining run budget.
-        while (index := next_target(campaign, max_attempts)) is not None:
-            if count >= max_runs:
-                campaign['stop_reason'] = 'run_limit'
-                break
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                campaign['stop_reason'] = 'time_budget'
-                break
-            attempt = run_attempt(directory, path, campaign, index, launch, remaining, stall_limit)
-            count += 1
-            if attempt['status'] == 'interrupted':
-                # The controller converts Ctrl-C/SIGTERM into an interrupted run; stop everything.
-                campaign['stop_reason'] = 'interrupted'
-                save(path, campaign)
-                raise KeyboardInterrupt
-            if attempt['status'] != 'completed' and not continue_on_failure:
-                campaign['stop_reason'] = 'attempt_' + attempt['status']
-                break
+        run_targets(directory, path, campaign, launch, time.monotonic() + budget, max_runs,
+                    max_attempts, stall_limit, continue_on_failure)
         campaign['stop_reason'] = final_stop_reason(campaign, max_attempts)
         save(path, campaign)
         return campaign['stop_reason']

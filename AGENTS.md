@@ -86,8 +86,9 @@ PREPARED_IMAGE=sha256:example LLM_HOST=host.docker.internal \
 - Fork pull requests get no `SONAR_TOKEN`, so the SonarQube job runs the tests
   but skips the scan step.
 - SonarQube path-traversal findings on operator-supplied host CLI paths
-  (`sandbox.py --output`, `sandbox.py verify --candidate`, the advisory snapshot
-  directory, and the campaign lock directory) were triaged as false positives
+  (`sandbox.py --output`, `sandbox.py verify --candidate`, the `campaign create`
+  state and tasks files, the advisory snapshot directory, and the campaign lock
+  directory) were triaged as false positives
   citing `SECURITY.md`. Sonar may describe these as "LLM-supplied" CLI arguments;
   they are typed by the operator.
 

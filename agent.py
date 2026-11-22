@@ -10,6 +10,7 @@ Hybrid Resilient Sandboxed Agent Loop for OpenAI-compatible inference servers.
 
 import itertools
 import json
+import math
 import os
 import selectors
 import signal
@@ -34,7 +35,7 @@ def env_number(name: str, default, cast=int, minimum=0):
         value = cast(raw)
     except ValueError:
         raise ValueError(f"{name} must be a number, got {raw!r}") from None
-    if value != value or value in (float("inf"), float("-inf")) or value < minimum:
+    if not math.isfinite(value) or value < minimum:
         raise ValueError(f"{name} must be a finite number >= {minimum}, got {raw!r}")
     return value
 
