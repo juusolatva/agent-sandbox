@@ -43,15 +43,139 @@ class TransferTests(unittest.TestCase):
     def test_patch_applies_binary_modes_and_missing_newline(self):
         before = bundle(b'old', 'source.txt')
         after = bundle(b'new', 'source.txt', True) | bundle(b'\0binary', 'new.bin')
-        diff, omitted = controller.patch_text(before, after)
-        self.assertFalse(omitted)
+        diff = controller.patch_bytes(before, after)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / 'source.txt').write_bytes(b'old')
-            subprocess.run(['git', 'apply', '-'], cwd=root, input=diff.encode(), check=True)
+            subprocess.run(['git', 'apply', '-'], cwd=root, input=diff, check=True)
             self.assertEqual((root / 'source.txt').read_bytes(), b'new')
             self.assertEqual((root / 'new.bin').read_bytes(), b'\0binary')
             self.assertTrue((root / 'source.txt').stat().st_mode & 0o111)
+
+    def test_patch_preserves_non_utf8_text_bytes(self):
+        before = bundle(b'caf\xe9 = 1\n', 'latin1.py')
+        after = bundle(b'caf\xe9 = 2\n\xff\xfe tail\n', 'latin1.py')
+        diff = controller.patch_bytes(before, after)
+        self.assertNotIn(b'GIT binary patch', diff)  # Classified as text, so bytes must survive.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'latin1.py').write_bytes(b'caf\xe9 = 1\n')
+            subprocess.run(['git', 'apply', '-'], cwd=root, input=diff, check=True)
+            self.assertEqual((root / 'latin1.py').read_bytes(), b'caf\xe9 = 2\n\xff\xfe tail\n')
+
+    def test_patch_ignores_host_git_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'gitconfig'
+            config.write_text('[color]\n\tui = always\n\tdiff = always\n[core]\n\tautocrlf = true\n')
+            with patch.dict(controller.os.environ, {'GIT_CONFIG_GLOBAL': str(config)}):
+                diff = controller.patch_bytes(bundle(b'old\n'), bundle(b'new\n'))
+        self.assertNotIn(b'\x1b[', diff)
+        self.assertIn(b'-old\n+new\n', diff)
+
+    def test_validate_rejects_oversized_field_before_decoding(self):
+        oversized = {'big': {'data': 'A' * (controller.transfer.LIMIT // 3 * 4 + 8), 'executable': False}}
+        with patch.object(controller.transfer.base64, 'b64decode') as decode, self.assertRaises(ValueError):
+            controller.transfer.validate(oversized)
+        decode.assert_not_called()
+        with self.assertRaises(ValueError):
+            controller.transfer.validate({'a': {'data': ['not', 'text'], 'executable': False}})
+
+    def test_load_caps_serialized_input_before_parsing(self):
+        import io
+        stream = io.BytesIO(b' ' * (controller.transfer.MAX_SERIALIZED + 1))
+        with patch.object(controller.transfer.json, 'loads') as loads, self.assertRaises(ValueError):
+            controller.transfer.load(stream)
+        loads.assert_not_called()
+        self.assertEqual(controller.transfer.load(io.BytesIO(json.dumps(bundle()).encode())), bundle())
+
+    def test_export_rejects_linked_root_special_files_and_unreadable_directories(self):
+        import os
+        with tempfile.TemporaryDirectory() as directory:
+            real = Path(directory) / 'real'
+            real.mkdir()
+            (real / 'plain.txt').write_text('ordinary')
+            linked = Path(directory) / 'workspace'
+            linked.symlink_to(real)
+            with self.assertRaises(ValueError):
+                controller.transfer.export(linked)
+            os.mkfifo(real / 'pipe')
+            with self.assertRaises(ValueError):
+                controller.transfer.export(real)
+            (real / 'pipe').unlink()
+            if os.geteuid() != 0:
+                hidden = real / 'hidden'
+                hidden.mkdir()
+                (hidden / 'source.py').write_text('x = 1\n')
+                hidden.chmod(0)
+                try:
+                    with self.assertRaises(ValueError):
+                        controller.transfer.export(real)
+                finally:
+                    hidden.chmod(0o755)
+
+    def test_export_rejects_entry_swapped_to_symlink_after_classification(self):
+        import os
+        import stat as stat_module
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'swapped').symlink_to('/etc/hostname')
+            real_stat = os.stat
+
+            def stale_stat(name, *args, **kwargs):
+                result = real_stat(name, *args, **kwargs)
+                if name == 'swapped':  # Pretend the entry was a regular file when classified.
+                    return os.stat_result((stat_module.S_IFREG | 0o644,) + tuple(result)[1:])
+                return result
+            with patch.object(controller.transfer.os, 'stat', side_effect=stale_stat), \
+                 self.assertRaises(ValueError):
+                controller.transfer.export(root)
+
+    def test_stat_failure_during_export_is_a_named_value_error(self):
+        import os
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'vanishing.py').write_text('x')
+            real_stat = os.stat
+
+            def failing_stat(name, *args, **kwargs):
+                if name == 'vanishing.py':
+                    raise FileNotFoundError(2, 'No such file or directory')
+                return real_stat(name, *args, **kwargs)
+            with patch.object(controller.transfer.os, 'stat', side_effect=failing_stat), \
+                 self.assertRaisesRegex(ValueError, 'Cannot stat vanishing.py'):
+                controller.transfer.export(root)
+
+    def test_patch_failure_reports_git_stderr(self):
+        failed = subprocess.CompletedProcess([], 128, b'', b'fatal: example failure\n')
+        before, after = bundle(), bundle(b'new')
+        with patch.object(controller.subprocess, 'run', return_value=failed), \
+             self.assertRaisesRegex(RuntimeError, 'fatal: example failure'):
+            controller.patch_bytes(before, after)
+
+    def test_export_keeps_stderr_out_of_bundle_and_rejects_truncation(self):
+        worker = execution.Worker({'image': 'sha256:fixture', 'config': {}})
+
+        def fake(args, timeout, limit, payload, digest, details):
+            details.update(errors='WARNING: swap limit not supported', truncated=False)
+            return 0, json.dumps(bundle())
+        with patch.object(execution, 'bounded_process', side_effect=fake), \
+             patch.object(execution.subprocess, 'run'):
+            self.assertEqual(worker.export(), bundle())
+
+        def truncated(args, timeout, limit, payload, digest, details):
+            details.update(errors='', truncated=True)
+            return 0, '{"partial'
+        with patch.object(execution, 'bounded_process', side_effect=truncated), \
+             patch.object(execution.subprocess, 'run'), self.assertRaises(RuntimeError):
+            worker.export()
+
+    def test_bounded_process_can_separate_stderr(self):
+        details = {}
+        code, output = execution.bounded_process(
+            ['python3', '-c', 'import sys; print("{}"); print("warning", file=sys.stderr)'], 5,
+            details=details)
+        self.assertEqual((code, output), (0, '{}\n'))
+        self.assertEqual(details, {'errors': 'warning\n', 'truncated': False})
 
     def test_worker_arguments_are_fixed_and_cleanup_always_runs(self):
         record = {'image': 'sha256:fixture', 'config': {}}

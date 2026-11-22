@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,8 +15,7 @@ ROOT = Path(__file__).resolve().parent
 PROFILES = json.loads((ROOT / 'docker/images.json').read_text())
 BASH = '/bin/bash'
 ADVISORY_ECOSYSTEMS = ('Go', 'PyPI', 'crates.io', 'npm')
-EXCLUDED = {'.git', '.ssh', '.aws', '.codex', '.agents', '__pycache__', '.venv',
-            'node_modules', 'target', 'artifacts', '.npmrc', '.pypirc', '.netrc'}
+TREE_HASH_VERSION = b'sandbox-tree-v2\0'
 
 
 def docker(*args, capture=False, timeout=None):
@@ -72,34 +70,60 @@ def load_project(path):
     return config, source
 
 
-def ignored(directory, names):
-    return {name for name in names if name in EXCLUDED or name.startswith('.env')}
+def _record(digest, *fields):
+    """Hash one length-prefixed record so file contents can never forge later records."""
+    for field in fields:
+        digest.update(len(field).to_bytes(8, 'big') + field)
 
 
 def snapshot(source, destination):
-    # Do not follow symlinks into host directories, including credential stores.
-    shutil.copytree(source, destination, symlinks=True, ignore=ignored)
-    for path in destination.rglob('*'):
-        if path.is_symlink():
-            target = path.resolve()
-            if not target.is_relative_to(destination.resolve()):
-                raise ValueError(f'Source contains an external symlink: {path.relative_to(destination)}')
-        elif not path.is_file() and not path.is_dir():
-            raise ValueError('Source contains a special file')
+    """Copy source into a new destination directory and return its tree fingerprint.
+
+    Traversal never follows links (see transfer.walk), so a concurrent writer
+    cannot redirect reads outside the source tree. Symlinks and special files
+    are rejected because Stage 3 snapshots cannot represent them. Credential,
+    dependency and build directories in transfer.SKIP are excluded, exactly as
+    they are from run snapshots.
+    """
+    from execution import transfer
+    destination = Path(destination)
+    destination.mkdir(mode=0o755)
+    digest = hashlib.sha256(TREE_HASH_VERSION)
+    for relative, opened in transfer.walk(source):
+        target = destination / relative
+        name = relative.as_posix().encode()
+        if opened is None:
+            target.mkdir(mode=0o755)
+            _record(digest, b'd', name)
+            continue
+        fd, info = opened
+        content, size = hashlib.sha256(), 0
+        with target.open('xb') as out:
+            while chunk := os.read(fd, 1 << 20):
+                size += len(chunk)
+                content.update(chunk)
+                out.write(chunk)
+            os.fchmod(out.fileno(), info.st_mode & 0o777)
+        if size != info.st_size:
+            raise ValueError(f'Source changed during preparation: {relative}')
+        _record(digest, b'f', name, str(info.st_mode & 0o777).encode(), content.digest())
+    return digest.hexdigest()
 
 
 def fingerprint(directory):
-    digest = hashlib.sha256()
-    for path in sorted(directory.rglob('*')):
-        digest.update(str(path.relative_to(directory)).encode() + b'\0')
-        digest.update(str(path.lstat().st_mode).encode() + b'\0')
-        if path.is_symlink():
-            digest.update(os.readlink(path).encode())
-        elif path.is_file():
-            with path.open('rb') as stream:
-                for block in iter(lambda: stream.read(65536), b''):
-                    digest.update(block)
-        digest.update(b'\0')
+    """Tree fingerprint of an existing snapshot, matching snapshot()'s return value."""
+    from execution import transfer
+    digest = hashlib.sha256(TREE_HASH_VERSION)
+    for relative, opened in transfer.walk(directory):
+        name = relative.as_posix().encode()
+        if opened is None:
+            _record(digest, b'd', name)
+            continue
+        fd, info = opened
+        content = hashlib.sha256()
+        while chunk := os.read(fd, 1 << 20):
+            content.update(chunk)
+        _record(digest, b'f', name, str(info.st_mode & 0o777).encode(), content.digest())
     return digest.hexdigest()
 
 
@@ -122,13 +146,11 @@ def prepare(manifest, state, ca=None):
     base = image_id(f"agent-sandbox/{config['profile']}:stage2")
     with tempfile.TemporaryDirectory(prefix='sandbox-prepare-') as temporary:
         context = Path(temporary)
-        snapshot(source, context / 'source')
-        source_hash = fingerprint(context / 'source')
+        source_hash = snapshot(source, context / 'source')
         verification_hash = None
         if config.get('verification'):
             verification_source = (Path(manifest).resolve().parent / config['verification']['source']).resolve()
-            snapshot(verification_source, context / 'verification')
-            verification_hash = fingerprint(context / 'verification')
+            verification_hash = snapshot(verification_source, context / 'verification')
         key = hashlib.sha256(json.dumps(["stage3-v1", config, source_hash, verification_hash, base], sort_keys=True).encode()).hexdigest()
         base_tag = f"agent-sandbox/{config['profile']}:stage2"
         lines = [f'FROM {base_tag}', 'USER root', 'RUN chmod 0755 /opt/sandbox',
@@ -304,12 +326,13 @@ def run_campaign_command(args):
 
 
 def run_verify_command(args):
-    from execution import verify
-    from controller import transfer
+    from execution import transfer, verify
     record = json.loads(Path(args.state).read_text())
     candidate = None
     if args.candidate:
-        candidate = transfer.validate(json.loads(Path(args.candidate).read_text()))
+        # Bound the read before parsing: the candidate file's contents are untrusted.
+        with open(args.candidate, 'rb') as stream:
+            candidate = transfer.load(stream)
     code, output = verify(record, candidate)
     print(output)
     raise SystemExit(code)

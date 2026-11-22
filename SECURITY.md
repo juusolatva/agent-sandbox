@@ -42,7 +42,10 @@ task and project-derived content. Model responses remain untrusted.
   Their network isolation, filesystem boundaries, and resource restrictions
   must hold when project code is malicious.
 - Transfers must not escape their designated roots, follow unsafe links, import
-  special files, or bypass enforced size and file-count limits.
+  special files, or bypass enforced size and file-count limits. Source preparation
+  and snapshot export traverse from directory descriptors with no-follow opens,
+  and treat unreadable directories as errors rather than omissions. Untrusted
+  serialized snapshots are size-capped before parsing and decoding.
 - Candidate edits cannot replace protected checks or acceptance commands.
   Verification uses fresh state and prepared dependencies, with candidate source
   read-only. Completion requires explicit action and successful protected checks.

@@ -4,7 +4,6 @@ import contextlib
 import hashlib
 import subprocess
 import tempfile
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -13,12 +12,7 @@ import uuid
 
 import agent
 from investigation import RepetitionGuard, Stalled
-from execution import Worker, verify
-
-# This is our own trusted transfer implementation, not project code.
-spec = importlib.util.spec_from_file_location('trusted_transfer', Path(__file__).parent / 'docker/transfer.py')
-transfer = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(transfer)
+from execution import Worker, transfer, verify
 
 
 def connect(base_url=None, model=None, timeout=120):
@@ -37,7 +31,14 @@ def connect(base_url=None, model=None, timeout=120):
         raise ValueError(f'Inference connection failed: {url}: {type(exc).__name__}') from exc
 
 
-def patch_text(before, after):
+# Host Git configuration (color.diff=always, core.autocrlf, ...) must not alter patch bytes.
+GIT_DIFF = ['git', '-c', 'core.autocrlf=false', '-c', 'core.fileMode=true',
+            'diff', '--no-index', '--binary', '--no-color', '--no-ext-diff', '--no-textconv',
+            '--src-prefix=', '--dst-prefix=', '--', 'a', 'b']
+
+
+def patch_bytes(before, after):
+    """Return a git-apply patch from before to after, byte-exact for non-UTF-8 text."""
     transfer.validate(before)
     transfer.validate(after)
     with tempfile.TemporaryDirectory(prefix='sandbox-patch-') as temporary:
@@ -49,14 +50,14 @@ def patch_text(before, after):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(base64.b64decode(entry['data'], validate=True))
                 path.chmod(0o755 if entry['executable'] else 0o644)
-        result = subprocess.run(['git', 'diff', '--no-index', '--binary', '--no-ext-diff',
-                                 '--no-textconv', '--src-prefix=', '--dst-prefix=', '--', 'a', 'b'],
-                                cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                timeout=30)
+        environment = {**os.environ, 'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': os.devnull,
+                       'GIT_CONFIG_SYSTEM': os.devnull}
+        result = subprocess.run(GIT_DIFF, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                env=environment, timeout=30)
         if result.returncode not in (0, 1):
-            raise RuntimeError('Could not generate patch')
-        return result.stdout.decode('utf-8', errors='replace'), []
-
+            detail = result.stderr.decode('utf-8', errors='replace').strip()[-1000:]
+            raise RuntimeError(f'Could not generate patch: {detail}')
+        return result.stdout
 
 
 class Evidence:
@@ -97,12 +98,10 @@ class DeadlineClient:
 def save_candidate(worker, before, evidence):
     """Retain the candidate snapshot, its patch, and the changed paths."""
     candidate = worker.export()
-    transfer.validate(candidate)
     evidence.save('candidate.json', candidate)
-    patch_data, binary = patch_text(before, candidate)
-    (evidence.path / 'candidate.patch').write_text(patch_data)
+    (evidence.path / 'candidate.patch').write_bytes(patch_bytes(before, candidate))
     evidence.save('changes.json', {'paths': sorted(k for k in before.keys() | candidate.keys()
-                  if before.get(k) != candidate.get(k)), 'binary_or_unsupported': binary})
+                  if before.get(k) != candidate.get(k))})
 
 
 class RunSession:
@@ -126,7 +125,6 @@ class RunSession:
 
     def gate(self):
         candidate = self.worker.export()
-        transfer.validate(candidate)
         code, output = verify(self.record, candidate, self.evidence.event, self.deadline)
         self.result['candidate_verified'] = code == 0
         return code == 0, output
@@ -172,7 +170,6 @@ def run(record, task, artifact_root, base_url=None, model=None, steps=20, timeou
         result.update(model=model, base_url=base_url)
         with Worker(record, evidence.event, deadline) as worker:
             before = worker.export()
-            transfer.validate(before)
             evidence.save('original.json', before)
 
             session = RunSession(record, worker, evidence, deadline, result, text_actions)

@@ -120,8 +120,12 @@ the manifest's directory:
   - **C/C++:** fetch third-party inputs, submodules, or CMake downloads during `prepare` so offline builds stay local.
 - **Snapshot exclusions:** `.git`, `.env*`, common credential files/directories
   (`.ssh`, `.aws`, `.npmrc`, `.pypirc`, `.netrc`, `.codex`, `.agents`), and build
-  caches (`__pycache__`, `.venv`, `node_modules`, `target`, `artifacts`) are
-  excluded, and external symlinks are rejected. Always inspect the target source
+  caches and outputs (`__pycache__`, `.venv`, `node_modules`, `target`, `artifacts`,
+  `.pytest_cache`, `build`, `dist`) are excluded. Preparation and run snapshots use
+  the same list (`SKIP` in `docker/transfer.py`), so a project that keeps tracked
+  source under `build/` or `dist/` must rename it. Preparation copies the source
+  without following links and rejects every symlink and special file, because run
+  snapshots cannot represent them. Always inspect the target source
   directory first; exclusions do not detect secrets embedded in source files.
   Prepared images are local artifacts containing source and dependencies—do not
   publish them without review.

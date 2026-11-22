@@ -51,11 +51,45 @@ class PreparationTests(unittest.TestCase):
             (source / '.git').mkdir()
             (source / 'main.py').write_text('print(1)')
             snapshot = Path(directory) / 'snapshot'
-            sandbox.snapshot(source, snapshot)
+            first = sandbox.snapshot(source, snapshot)
             self.assertEqual([p.name for p in snapshot.iterdir()], ['main.py'])
-            first = sandbox.fingerprint(snapshot)
+            self.assertEqual(first, sandbox.fingerprint(snapshot))
             (snapshot / 'main.py').write_text('print(2)')
             self.assertNotEqual(first, sandbox.fingerprint(snapshot))
+
+    def test_snapshot_skips_the_same_names_as_run_transfer(self):
+        from execution import transfer
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'source'
+            source.mkdir()
+            for name in sorted(transfer.SKIP) + ['.env.local']:
+                (source / name).mkdir()
+                (source / name / 'file').write_text('x')
+            (source / 'kept.py').write_text('x')
+            sandbox.snapshot(source, Path(directory) / 'snapshot')
+            self.assertEqual([p.name for p in (Path(directory) / 'snapshot').iterdir()], ['kept.py'])
+
+    def test_snapshot_preserves_modes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'source'
+            source.mkdir()
+            (source / 'run.sh').write_text('#!/bin/sh\n')
+            (source / 'run.sh').chmod(0o755)
+            sandbox.snapshot(source, Path(directory) / 'snapshot')
+            self.assertEqual((Path(directory) / 'snapshot' / 'run.sh').stat().st_mode & 0o777, 0o755)
+
+    def test_fingerprint_distinguishes_file_boundaries(self):
+        # v1 hashed path\0mode\0data\0 records, so one file's data could encode another record.
+        with tempfile.TemporaryDirectory() as directory:
+            one, two = Path(directory) / 'one', Path(directory) / 'two'
+            one.mkdir()
+            two.mkdir()
+            (one / 'a').write_text('x')
+            (one / 'b').write_text('y')
+            mode = str((one / 'b').lstat().st_mode)
+            (two / 'a').write_bytes(b'x\0b\0' + mode.encode() + b'\0y')
+            (two / 'a').chmod((one / 'a').stat().st_mode & 0o777)
+            self.assertNotEqual(sandbox.fingerprint(one), sandbox.fingerprint(two))
 
     def test_external_symlink_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -64,6 +98,31 @@ class PreparationTests(unittest.TestCase):
             (source / 'outside').symlink_to('/etc/passwd')
             with self.assertRaises(ValueError):
                 sandbox.snapshot(source, Path(directory) / 'snapshot')
+
+    def test_internal_symlinks_loops_and_special_files_rejected(self):
+        # Stage 3 transfer cannot represent these, so preparation must not accept them.
+        import os
+        for make in (lambda s: (s / 'link').symlink_to('main.py'),
+                     lambda s: (s / 'loop').symlink_to('loop'),
+                     lambda s: os.mkfifo(s / 'pipe')):
+            with self.subTest(make=make), tempfile.TemporaryDirectory() as directory:
+                source = Path(directory) / 'source'
+                source.mkdir()
+                (source / 'main.py').write_text('x')
+                make(source)
+                with self.assertRaises(ValueError):
+                    sandbox.snapshot(source, Path(directory) / 'snapshot')
+
+    def test_verify_candidate_read_is_bounded(self):
+        from execution import transfer
+        with tempfile.TemporaryDirectory() as directory:
+            candidate = Path(directory) / 'candidate.json'
+            candidate.write_bytes(b' ' * (transfer.MAX_SERIALIZED + 1))
+            args = type('Args', (), {'state': str(Path(directory) / 'state.json'), 'candidate': str(candidate)})
+            (Path(directory) / 'state.json').write_text('{}')
+            with patch('execution.verify') as verify, self.assertRaises(ValueError):
+                sandbox.run_verify_command(args)
+            verify.assert_not_called()
 
     def test_check_disables_network_and_uses_immutable_image(self):
         with patch.object(sandbox, 'docker') as docker, patch.object(sandbox.subprocess, 'run'):
