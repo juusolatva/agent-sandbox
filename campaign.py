@@ -285,9 +285,11 @@ def replay(directory, attempt_path, command, timeout=600, worker_class=None):
         known = [directory / a['result'] for t in campaign['tasks'] for a in t['attempts'] if a.get('result')]
         if attempt / 'result.json' not in known:
             raise ValueError('Replay must select a recorded run artifact directory')
-        from controller import transfer
-        bundles = {side: transfer.validate(json.loads((attempt / (side + '.json')).read_text()))
-                   for side in ('original', 'candidate')}
+        from execution import transfer
+        bundles = {}
+        for side in ('original', 'candidate'):
+            with (attempt / (side + '.json')).open('rb') as stream:
+                bundles[side] = transfer.load(stream)
         record = json.loads((directory / PREPARED_FILE).read_text())
         check_prepared(campaign, record)
         if worker_class is None:

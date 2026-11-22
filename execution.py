@@ -1,4 +1,5 @@
 """Trusted Docker execution boundary. No model-provided Docker arguments."""
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -11,26 +12,39 @@ import uuid
 
 TRANSFER = Path(__file__).resolve().parent / 'docker/transfer.py'
 
+# Our own trusted transfer implementation, also mounted into containers; not project code.
+_spec = importlib.util.spec_from_file_location('trusted_transfer', TRANSFER)
+transfer = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(transfer)
 
-def bounded_process(argv, timeout, limit=8000, input_bytes=None, digest=None):
+
+def bounded_process(argv, timeout, limit=8000, input_bytes=None, digest=None, details=None):
     """Drain arbitrary output with bounded retention and a wall-clock deadline.
 
     An optional hashlib digest is updated with the complete output stream, so
     callers can compare results that differ only after the retention limit.
+    When a details dict is given, stderr is kept out of the returned output and
+    stored (bounded) under details['errors'], and details['truncated'] records
+    whether stdout exceeded the limit, so machine-readable output stays intact.
     """
     update = digest.update if digest is not None else (lambda chunk: None)
     output = bytearray()
+    errors = bytearray()
     truncated = False
+    separate = details is not None
     with tempfile.TemporaryFile() as incoming:
         if input_bytes is not None:
             incoming.write(input_bytes)
         incoming.seek(0)
         process = subprocess.Popen(argv, stdin=incoming, stdout=subprocess.PIPE,
-                                   stderr=subprocess.STDOUT, start_new_session=True)
+                                   stderr=subprocess.PIPE if separate else subprocess.STDOUT,
+                                   start_new_session=True)
         deadline = time.monotonic() + timeout
         try:
             with selectors.DefaultSelector() as selector:
                 selector.register(process.stdout, selectors.EVENT_READ)
+                if separate:
+                    selector.register(process.stderr, selectors.EVENT_READ)
                 while selector.get_map():
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
@@ -39,6 +53,8 @@ def bounded_process(argv, timeout, limit=8000, input_bytes=None, digest=None):
                         chunk = os.read(key.fileobj.fileno(), 65536)
                         if not chunk:
                             selector.unregister(key.fileobj)
+                        elif key.fileobj is process.stderr:
+                            errors.extend(chunk[:8000 - len(errors)])
                         else:
                             update(chunk)
                             available = limit - len(output)
@@ -56,7 +72,11 @@ def bounded_process(argv, timeout, limit=8000, input_bytes=None, digest=None):
                 pass
             process.wait()
             process.stdout.close()
-    if truncated:
+            if separate:
+                process.stderr.close()
+    if separate:
+        details.update(errors=errors.decode('utf-8', errors='replace'), truncated=truncated)
+    elif truncated:
         output.extend(b'\n[output truncated]')
     return code, output.decode('utf-8', errors='replace')
 
@@ -82,7 +102,7 @@ class Worker:
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
 
     def execute(self, command, *, readonly=False, transfer=None, payload=None, limit=8000, timeout=None,
-                digest=None):
+                digest=None, details=None):
         config = self.record['config']
         timeout = timeout or config.get('timeout', 600)
         if transfer:
@@ -118,26 +138,35 @@ class Worker:
                      'mkdir -p /tmp/home; ' + command]
         started = time.monotonic()
         try:
-            code, output = bounded_process(args, timeout, limit, payload, digest)
+            code, output = bounded_process(args, timeout, limit, payload, digest, details)
         finally:
             # Includes timeout, Ctrl-C, and detached descendants of project commands.
             subprocess.run(['docker', 'rm', '-f', name], check=False, timeout=30,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        self.events({'kind': 'command', 'command': command if not transfer else transfer,
-                     'readonly': readonly, 'code': code, 'output': output,
-                     'seconds': round(time.monotonic() - started, 3)})
+        event = {'kind': 'command', 'command': command if not transfer else transfer,
+                 'readonly': readonly, 'code': code, 'output': output,
+                 'seconds': round(time.monotonic() - started, 3)}
+        if details is not None:
+            event['errors'] = details.get('errors', '')
+        self.events(event)
         return code, output
 
     def export(self):
-        code, output = self.execute('', readonly=True, transfer='export', limit=24 * 1024 * 1024)
+        details = {}
+        code, output = self.execute('', readonly=True, transfer='export',
+                                    limit=transfer.MAX_SERIALIZED, details=details)
         if code:
-            raise RuntimeError(f'Source export failed: {output[:1000]}')
-        return json.loads(output)
+            raise RuntimeError(f'Source export failed: {(details.get("errors") or output)[-1000:]}')
+        if details.get('truncated'):
+            raise RuntimeError(f'Source export exceeds {transfer.MAX_SERIALIZED} serialized bytes')
+        return transfer.validate(json.loads(output))
 
     def restore(self, bundle):
-        code, output = self.execute('', transfer='restore', payload=json.dumps(bundle).encode())
+        details = {}
+        code, output = self.execute('', transfer='restore', payload=json.dumps(bundle).encode(),
+                                    details=details)
         if code:
-            raise RuntimeError(f'Source restore failed: {output[:1000]}')
+            raise RuntimeError(f'Source restore failed: {(details.get("errors") or output)[-1000:]}')
 
 
 def verify(record, bundle=None, events=None, deadline=None):

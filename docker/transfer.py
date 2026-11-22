@@ -3,14 +3,21 @@ import base64
 import json
 import os
 from pathlib import Path, PurePosixPath
+import stat
 import sys
 
 LIMIT = 16 * 1024 * 1024
+# Serialized bundles carry base64 (4/3 expansion) plus paths and JSON framing.
+MAX_SERIALIZED = LIMIT * 2
 MAX_FILES = 5000
+# Shared with sandbox.py preparation so prepared images and snapshots agree.
 SKIP = {'.git', '.ssh', '.aws', '.codex', '.agents', '.venv', '__pycache__',
         'node_modules', 'target', 'artifacts', '.npmrc', '.netrc', '.pypirc',
         '.pytest_cache', 'build', 'dist'}
 ROOT = Path('/home/agent/workspace')
+DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+# O_NONBLOCK keeps a FIFO swapped in after classification from blocking the open.
+FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 
 
 def valid_path(name):
@@ -29,8 +36,11 @@ def validate(bundle):
         valid_path(name)
         if not isinstance(entry, dict) or set(entry) != {'data', 'executable'}:
             raise ValueError('Invalid file record')
-        if not isinstance(entry['executable'], bool):
-            raise ValueError('Invalid executable flag')
+        if not isinstance(entry['executable'], bool) or not isinstance(entry['data'], str):
+            raise ValueError('Invalid file record')
+        # Reject an oversized field before allocating its decoded form.
+        if len(entry['data']) > (LIMIT - total + 2) // 3 * 4:
+            raise ValueError('Bundle exceeds size limit')
         content = base64.b64decode(entry['data'], validate=True)
         total += len(content)
         if total > LIMIT:
@@ -38,47 +48,101 @@ def validate(bundle):
     return bundle
 
 
+def load(stream):
+    """Parse a serialized bundle from a binary stream without reading past the limit."""
+    raw = stream.read(MAX_SERIALIZED + 1)
+    if len(raw) > MAX_SERIALIZED:
+        raise ValueError('Serialized bundle exceeds limit')
+    return validate(json.loads(raw))
+
+
 def skipped(name):
     return name in SKIP or name.startswith('.env')
 
 
-def walk_directories(directory, dirs):
-    """Prune skipped directories in place and reject directory symlinks."""
-    dirs[:] = sorted(d for d in dirs if not skipped(d))
-    if any((Path(directory) / name).is_symlink() for name in dirs):
-        raise ValueError('Directory symlinks are not supported in Stage 3')
+def walk(root):
+    """Yield (relative path, None) for directories and (relative path, (fd, stat)) for files.
+
+    Traversal is anchored to directory descriptors and never follows a link,
+    including the root itself. Symlinks, special files and unreadable
+    directories raise instead of being skipped, so callers never receive a
+    silently partial tree. Yielded file descriptors are valid only until the
+    generator resumes.
+    """
+    try:
+        root_fd = os.open(root, DIRECTORY_FLAGS)
+    except OSError as exc:
+        raise ValueError(f'Tree root is not a readable directory: {exc.strerror}') from exc
+    try:
+        yield from _walk(root_fd, PurePosixPath())
+    finally:
+        os.close(root_fd)
 
 
-def read_regular(path, budget):
-    """Read a regular, non-symlink file within budget bytes, rejecting concurrent changes."""
-    if path.is_symlink() or not path.is_file():
-        raise ValueError('Only regular source files are supported in Stage 3')
-    size = path.stat().st_size
-    if size > budget:
+def _walk(directory_fd, prefix):
+    try:
+        names = sorted(os.listdir(directory_fd))
+    except OSError as exc:
+        raise ValueError(f'Cannot read directory {prefix.as_posix() or "."}: {exc.strerror}') from exc
+    for name in names:
+        if skipped(name):
+            continue
+        relative = prefix / name
+        mode = os.stat(name, dir_fd=directory_fd, follow_symlinks=False).st_mode
+        if stat.S_ISDIR(mode):
+            try:
+                child = os.open(name, DIRECTORY_FLAGS, dir_fd=directory_fd)
+            except OSError as exc:
+                raise ValueError(f'Cannot open directory {relative}: {exc.strerror}') from exc
+            try:
+                yield relative, None
+                yield from _walk(child, relative)
+            finally:
+                os.close(child)
+        elif stat.S_ISREG(mode):
+            try:
+                fd = os.open(name, FILE_FLAGS, dir_fd=directory_fd)
+            except OSError as exc:
+                raise ValueError(f'Cannot open file {relative}: {exc.strerror}') from exc
+            try:
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode):
+                    raise ValueError(f'File changed type during traversal: {relative}')
+                yield relative, (fd, info)
+            finally:
+                os.close(fd)
+        else:
+            raise ValueError(f'Only regular files and directories are supported: {relative}')
+
+
+def read_regular(fd, info, budget):
+    """Read an opened regular file within budget bytes, rejecting concurrent changes."""
+    if info.st_size > budget:
         raise ValueError('Source export exceeds limit')
-    with path.open('rb') as stream:
-        content = stream.read(LIMIT + 1)
-    if len(content) != size:
+    chunks, size = [], 0
+    while chunk := os.read(fd, min(1 << 20, info.st_size + 1 - size) or 1):
+        chunks.append(chunk)
+        size += len(chunk)
+        if size > info.st_size:
+            break
+    if size != info.st_size:
         raise ValueError('File changed during export')
-    return content
+    return b''.join(chunks)
 
 
 def export(root=ROOT):
     bundle = {}
     total = 0
-    for directory, dirs, files in os.walk(root, followlinks=False):
-        walk_directories(directory, dirs)
-        for name in sorted(files):
-            if skipped(name):
-                continue
-            path = Path(directory) / name
-            if len(bundle) >= MAX_FILES:
-                raise ValueError('Source export exceeds limit')
-            content = read_regular(path, LIMIT - total)
-            total += len(content)
-            bundle[path.relative_to(root).as_posix()] = {
-                'data': base64.b64encode(content).decode(),
-                'executable': bool(path.stat().st_mode & 0o111)}
+    for relative, opened in walk(root):
+        if opened is None:
+            continue
+        if len(bundle) >= MAX_FILES:
+            raise ValueError('Source export exceeds limit')
+        fd, info = opened
+        content = read_regular(fd, info, LIMIT - total)
+        total += len(content)
+        bundle[relative.as_posix()] = {'data': base64.b64encode(content).decode(),
+                                       'executable': bool(info.st_mode & 0o111)}
     return validate(bundle)
 
 
@@ -105,9 +169,6 @@ if __name__ == '__main__':
     if sys.argv[1] == 'export':
         print(json.dumps(export(), sort_keys=True))
     elif sys.argv[1] == 'restore':
-        raw = sys.stdin.buffer.read(LIMIT * 2 + 1)
-        if len(raw) > LIMIT * 2:
-            raise ValueError('Input exceeds limit')
-        restore(json.loads(raw))
+        restore(load(sys.stdin.buffer))
     else:
         raise ValueError('Unknown transfer operation')
