@@ -147,9 +147,10 @@ class TransferTests(unittest.TestCase):
 
     def test_patch_failure_reports_git_stderr(self):
         failed = subprocess.CompletedProcess([], 128, b'', b'fatal: example failure\n')
+        before, after = bundle(), bundle(b'new')
         with patch.object(controller.subprocess, 'run', return_value=failed), \
              self.assertRaisesRegex(RuntimeError, 'fatal: example failure'):
-            controller.patch_bytes(bundle(), bundle(b'new'))
+            controller.patch_bytes(before, after)
 
     def test_export_keeps_stderr_out_of_bundle_and_rejects_truncation(self):
         worker = execution.Worker({'image': 'sha256:fixture', 'config': {}})
