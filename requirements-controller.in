@@ -1,0 +1,2 @@
+# Direct host controller dependencies; requirements-controller.txt is the hashed lock.
+openai==2.6.1

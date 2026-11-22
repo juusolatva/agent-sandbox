@@ -7,7 +7,7 @@
   ],
   "check": "GOPROXY=off go test -mod=readonly ./...",
   "verification": {
-    "source": "verification/go",
-    "command": "GOPROXY=off go run -mod=readonly /opt/sandbox/verification/check.go"
+    "source": "verification",
+    "command": "GOPROXY=off go build -mod=readonly -o /tmp/harness /opt/sandbox/verification/harness.go && python3 -I /opt/sandbox/verification/check.py /tmp/harness"
   }
 }

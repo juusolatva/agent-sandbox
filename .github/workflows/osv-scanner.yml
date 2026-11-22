@@ -26,12 +26,13 @@ jobs:
     if: ${{ github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
     with:
-      # Code scanning needs GitHub Code Security on this private repository. Set the
-      # OSV_UPLOAD_SARIF repository variable to 'true' once it is enabled; until then
-      # results stay in the job log and vulnerabilities still fail the run.
+      # SARIF upload needs GitHub code scanning enabled for this repository. Set the
+      # OSV_UPLOAD_SARIF repository variable to 'true' once it is; until then results
+      # stay in the job log and vulnerabilities still fail the run.
       upload-sarif: ${{ vars.OSV_UPLOAD_SARIF == 'true' }}
-      # requirements-controller.txt holds the exact host controller pins; -r also finds
-      # fixture manifests and any lockfiles added later.
+      # requirements-controller.txt is the hashed host controller lock, transitive
+      # dependencies included, so --no-resolve still scans every installed package;
+      # -r also finds fixture manifests and any lockfiles added later.
       scan-args: |-
         --lockfile=requirements.txt:requirements-controller.txt
         --no-resolve

@@ -1,4 +1,6 @@
-# Use through sandbox.py run, which supplies an immutable prepared image ID.
+# Legacy Compose override for a prepared project image. Set PREPARED_IMAGE to the
+# immutable image ID from a sandbox.py prepare state file. (sandbox.py run does not
+# use Compose; it starts its own workers.)
 services:
   sandbox:
     image: ${PREPARED_IMAGE:?Set PREPARED_IMAGE to a checked project image ID}
