@@ -43,6 +43,9 @@ CONTINUOUS = os.environ.get("CONTINUOUS", "0").strip().lower() in {"1", "true", 
 MAX_OUTPUT_CHARS = 8000
 MAX_ACTION_CHARS = 32000
 WORKSPACE = os.environ.get("WORKSPACE", "/home/agent/workspace")
+# Legacy Compose only: kill every process left by earlier actions before the next one.
+PROC = "/proc"
+REAP_STRAYS = os.environ.get("SANDBOX_REAP_STRAYS", "0").strip().lower() in {"1", "true", "yes"}
 LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "120"))
 
 
@@ -117,33 +120,101 @@ def get_active_model() -> str:
     sys.exit(1)
 
 
+def parent_pid(pid: int, proc: str = PROC) -> int:
+    """Parent PID from /proc/<pid>/stat (the command name may contain spaces or parens)."""
+    with open(f"{proc}/{pid}/stat") as stream:
+        return int(stream.read().rsplit(")", 1)[1].split()[1])
+
+
+def protected_pids(proc: str = PROC, self_pid: int | None = None) -> set[int]:
+    """This process and its ancestors, which a stray sweep must never signal."""
+    keep, pid = set(), self_pid or os.getpid()
+    while pid > 0 and pid not in keep:
+        keep.add(pid)
+        try:
+            pid = parent_pid(pid, proc)
+        except (OSError, ValueError, IndexError):
+            break
+    return keep
+
+
+def signal_others(keep: set[int], proc: str = PROC, kill=os.kill) -> int:
+    """SIGKILL every listed process outside keep; return how many were signalled."""
+    signalled = 0
+    for entry in os.listdir(proc):
+        if not entry.isdigit() or int(entry) in keep:
+            continue
+        try:
+            kill(int(entry), signal.SIGKILL)
+            signalled += 1
+        except (ProcessLookupError, PermissionError):
+            pass
+    return signalled
+
+
+def reap_strays(proc: str = PROC, kill=os.kill, self_pid: int | None = None) -> int:
+    """Kill every process except this one and its ancestors; return how many were signalled.
+
+    The legacy Compose loop reuses one container for every action, so a command
+    that escapes its process group (setsid, daemonizing) would otherwise keep
+    running into later actions and verification. Only safe inside that
+    container's PID namespace, so it runs only when SANDBOX_REAP_STRAYS is set.
+    """
+    keep = protected_pids(proc, self_pid)
+    total = 0
+    for _ in range(10):  # Repeat: a stray may fork while it is being swept.
+        signalled = signal_others(keep, proc, kill)
+        total += signalled
+        if not signalled:
+            break
+    return total
+
+
+def drain_output(process, command: str) -> tuple[bytearray, bool]:
+    """Read merged output until EOF within COMMAND_TIMEOUT; return (retained, truncated)."""
+    retained, truncated = bytearray(), False
+    deadline = time.monotonic() + COMMAND_TIMEOUT
+    with selectors.DefaultSelector() as selector:
+        selector.register(process.stdout, selectors.EVENT_READ)
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, COMMAND_TIMEOUT)
+            for key, _ in selector.select(min(remaining, 0.1)):
+                chunk = os.read(key.fileobj.fileno(), 65536)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                available = MAX_OUTPUT_CHARS - len(retained)
+                retained.extend(chunk[:available])
+                truncated |= len(chunk) > available
+        process.wait(timeout=max(0.001, deadline - time.monotonic()))
+    return retained, truncated
+
+
+def stop_process_group(process) -> None:
+    """Kill the command's process group (including background children) and reap it."""
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait()
+    process.stdout.close()
+
+
 def execute_bash(command: str, label: str = "sandbox $") -> tuple[int, str]:
     """Drain merged output with bounded storage and clean up the process group."""
+    if REAP_STRAYS:
+        reap_strays()
     print(f"\n[{label}] {command}")
-    retained = bytearray()
-    truncated = False
+    retained, truncated = bytearray(), False
     process = None
     try:
         process = subprocess.Popen(
             ["/bin/bash", "-c", command], cwd=WORKSPACE,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
         )
-        deadline = time.monotonic() + COMMAND_TIMEOUT
-        with selectors.DefaultSelector() as selector:
-            selector.register(process.stdout, selectors.EVENT_READ)
-            while selector.get_map():
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise subprocess.TimeoutExpired(command, COMMAND_TIMEOUT)
-                for key, _ in selector.select(min(remaining, 0.1)):
-                    chunk = os.read(key.fileobj.fileno(), 65536)
-                    if not chunk:
-                        selector.unregister(key.fileobj)
-                        continue
-                    available = MAX_OUTPUT_CHARS - len(retained)
-                    retained.extend(chunk[:available])
-                    truncated |= len(chunk) > available
-            process.wait(timeout=max(0.001, deadline - time.monotonic()))
+        retained, truncated = drain_output(process, command)
         returncode = process.returncode
         status = f"Exit code: {returncode}"
     except subprocess.TimeoutExpired:
@@ -154,13 +225,9 @@ def execute_bash(command: str, label: str = "sandbox $") -> tuple[int, str]:
         status = f"Error executing command: {exc}"
     finally:
         if process is not None:
-            # Also remove background children after a normally completed shell.
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.wait()
-            process.stdout.close()
+            stop_process_group(process)
+        if REAP_STRAYS:
+            reap_strays()
     output = retained.decode("utf-8", errors="replace").strip() or "(no output)"
     full_output = f"{status}\n{output}"
     if truncated:
@@ -415,7 +482,7 @@ def validate_action(name: str, arguments: str) -> dict:
     """Validate untrusted tool arguments before dispatch."""
     fields = {"run_bash": "command", "finish_task": "summary"}
     if name not in fields:
-        raise ValueError(f"Unknown tool: {name}")
+        raise ValueError(f"Unknown tool: {bounded(str(name), 100)!r}")
     if not isinstance(arguments, str) or len(arguments) > MAX_ACTION_CHARS:
         raise ValueError("Arguments must be a bounded JSON string")
     args = json.loads(arguments)
@@ -438,23 +505,39 @@ def dispatch(name: str, args: dict, execute, verify) -> tuple[bool, str]:
     return passed, output
 
 
+def bounded(text, limit: int = MAX_ACTION_CHARS) -> str:
+    """Bound untrusted model text before it enters the retained conversation."""
+    text = text if isinstance(text, str) else ""
+    return text if len(text) <= limit else text[:limit] + "\n[truncated]"
+
+
 def handle_tool_calls(content: str, calls, messages: list[dict], execute, verify) -> bool:
-    """Dispatch native tool calls, appending each result; return True on accepted completion."""
-    messages.append({"role": "assistant", "content": content, "tool_calls": [
-        {"id": c.id, "type": "function", "function": {
-            "name": c.function.name, "arguments": c.function.arguments}} for c in calls]})
-    for call in calls:
-        try:
-            name = call.function.name
-            args = validate_action(name, call.function.arguments)
-            if name == "finish_task" and len(calls) != 1:
-                raise ValueError("finish_task must be the only action in a turn")
-            completed, output = dispatch(name, args, execute, verify)
-            if completed:
-                return True
-        except (ValueError, TypeError) as exc:
-            output = f"Invalid action: {exc}"
-        messages.append({"role": "tool", "tool_call_id": call.id, "content": output})
+    """Dispatch the first native tool call of a turn; return True on accepted completion.
+
+    One action per turn keeps --steps/MAX_ITERATIONS an actual command budget,
+    matching text-action mode. Further calls are dropped from history and
+    reported to the model instead of being executed.
+    """
+    call = calls[0]
+    arguments = call.function.arguments
+    retained = arguments if isinstance(arguments, str) and len(arguments) <= MAX_ACTION_CHARS else "{}"
+    messages.append({"role": "assistant", "content": bounded(content), "tool_calls": [
+        {"id": call.id, "type": "function", "function": {
+            "name": bounded(call.function.name, 100), "arguments": retained}}]})
+    try:
+        name = call.function.name
+        args = validate_action(name, arguments)
+        if name == "finish_task" and len(calls) != 1:
+            raise ValueError("finish_task must be the only action in a turn")
+        completed, output = dispatch(name, args, execute, verify)
+        if completed:
+            return True
+    except (ValueError, TypeError) as exc:
+        output = bounded(f"Invalid action: {exc}", 1000)
+    if len(calls) > 1:
+        output = (f"Only the first of {len(calls)} tool calls was considered; "
+                  f"issue one action per turn.\n{output}")
+    messages.append({"role": "tool", "tool_call_id": call.id, "content": output})
     return False
 
 
@@ -476,7 +559,7 @@ def handle_text_action(content: str, messages: list[dict], execute, verify) -> b
     """Dispatch a text action, appending feedback; return True on accepted completion."""
     # Only a complete, single tag is an action. Prose, fences and reasoning
     # are never interpreted as commands or implicit success.
-    messages.append({"role": "assistant", "content": content})
+    messages.append({"role": "assistant", "content": bounded(content)})
     output = "Use one explicit run_bash/finish_task call or one <bash>/<done> action."
     try:
         action = parse_text_action(content)
@@ -485,7 +568,7 @@ def handle_text_action(content: str, messages: list[dict], execute, verify) -> b
             if completed:
                 return True
     except ValueError as exc:
-        output = f"Invalid action: {exc}"
+        output = bounded(f"Invalid action: {exc}", 1000)
     messages.append({"role": "user", "content": output})
     return False
 

@@ -18,6 +18,24 @@ transfer = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(transfer)
 
 
+# Docker injects its client-configured proxies (which may embed credentials) into
+# containers and builds unless each key is set explicitly; cover every key it knows.
+PROXY_KEYS = tuple(key for name in ('HTTP_PROXY', 'HTTPS_PROXY', 'FTP_PROXY', 'ALL_PROXY', 'NO_PROXY')
+                   for key in (name, name.lower()))
+
+
+def container_isolation_args():
+    """Flags shared by every project container: no proxy settings, no daemon-side log copy.
+
+    The controller records bounded output itself; a persistent Docker log of an
+    attached container would retain the full, unbounded stream on shared disk.
+    """
+    args = ['--log-driver', 'none']
+    for key in PROXY_KEYS:
+        args += ['--env', key + '=']
+    return args
+
+
 class _Retained:
     """Bounded copies of a process's stdout and (optionally separate) stderr."""
 
@@ -135,10 +153,8 @@ class Worker:
                 '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
                 '--memory', str(config.get('memory', '4g')), '--cpus', str(config.get('cpus', 2)),
                 '--pids-limit', str(config.get('pids', 256)),
-                '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=1g', '--mount', mount]
-        for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
-                    'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy'):
-            args += ['--env', key + '=']
+                '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=1g', '--mount', mount,
+                *container_isolation_args()]
         if transfer:
             args += ['--user', '1000:1000', '--mount', f'type=bind,src={TRANSFER},dst=/opt/transfer.py,readonly',
                      '--entrypoint', 'python3']
@@ -148,6 +164,8 @@ class Worker:
         else:
             args += ['--user', '1000:1000', '--env', 'HOME=/tmp/home',
                      '--env', 'GOCACHE=/tmp/go-cache', '--env', 'GOPATH=/home/agent/go',
+                     # HOME moves to /tmp, but npm's prepared offline cache stays in the volume.
+                     '--env', 'npm_config_cache=/home/agent/.npm',
                      '--env', 'CARGO_TARGET_DIR=/tmp/cargo-target',
                      '--env', 'PYTHONDONTWRITEBYTECODE=1',
                      '--entrypoint', '/bin/bash', self.record['image'], '-e', '-c',
