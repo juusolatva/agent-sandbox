@@ -44,6 +44,7 @@ MAX_OUTPUT_CHARS = 8000
 MAX_ACTION_CHARS = 32000
 WORKSPACE = os.environ.get("WORKSPACE", "/home/agent/workspace")
 # Legacy Compose only: kill every process left by earlier actions before the next one.
+PROC = "/proc"
 REAP_STRAYS = os.environ.get("SANDBOX_REAP_STRAYS", "0").strip().lower() in {"1", "true", "yes"}
 LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "120"))
 
@@ -119,13 +120,13 @@ def get_active_model() -> str:
     sys.exit(1)
 
 
-def parent_pid(pid: int, proc: str = "/proc") -> int:
+def parent_pid(pid: int, proc: str = PROC) -> int:
     """Parent PID from /proc/<pid>/stat (the command name may contain spaces or parens)."""
     with open(f"{proc}/{pid}/stat") as stream:
         return int(stream.read().rsplit(")", 1)[1].split()[1])
 
 
-def protected_pids(proc: str = "/proc", self_pid: int | None = None) -> set[int]:
+def protected_pids(proc: str = PROC, self_pid: int | None = None) -> set[int]:
     """This process and its ancestors, which a stray sweep must never signal."""
     keep, pid = set(), self_pid or os.getpid()
     while pid > 0 and pid not in keep:
@@ -137,7 +138,7 @@ def protected_pids(proc: str = "/proc", self_pid: int | None = None) -> set[int]
     return keep
 
 
-def signal_others(keep: set[int], proc: str = "/proc", kill=os.kill) -> int:
+def signal_others(keep: set[int], proc: str = PROC, kill=os.kill) -> int:
     """SIGKILL every listed process outside keep; return how many were signalled."""
     signalled = 0
     for entry in os.listdir(proc):
@@ -151,7 +152,7 @@ def signal_others(keep: set[int], proc: str = "/proc", kill=os.kill) -> int:
     return signalled
 
 
-def reap_strays(proc: str = "/proc", kill=os.kill, self_pid: int | None = None) -> int:
+def reap_strays(proc: str = PROC, kill=os.kill, self_pid: int | None = None) -> int:
     """Kill every process except this one and its ancestors; return how many were signalled.
 
     The legacy Compose loop reuses one container for every action, so a command
